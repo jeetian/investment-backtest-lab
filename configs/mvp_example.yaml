@@ -1,0 +1,77 @@
+base_currency: TWD
+start_date: "2020-01-01"
+end_date: "2025-12-31"
+benchmark: SPY
+
+universe:
+  - ticker: SPY
+    name: SPDR S&P 500 ETF
+    market: US
+    asset_type: etf
+    currency: USD
+    data_source: yfinance
+  - ticker: QQQ
+    name: Invesco QQQ ETF
+    market: US
+    asset_type: etf
+    currency: USD
+    data_source: yfinance
+  - ticker: "0050"
+    name: Yuanta Taiwan 50 ETF
+    market: TW
+    asset_type: etf
+    currency: TWD
+    data_source: finmind
+  - ticker: "2330"
+    name: TSMC
+    market: TW
+    asset_type: stock
+    currency: TWD
+    data_source: finmind
+
+strategy:
+  name: moving_average_timing
+  params:
+    fast_window: 50
+    slow_window: 200
+    init_cash: 100000
+
+rebalance:
+  frequency: monthly
+  target_weights:
+    SPY: 0.35
+    QQQ: 0.25
+    "0050": 0.25
+    "2330": 0.15
+
+dca:
+  contribution: 10000
+  frequency: MS
+
+dividend:
+  mode: cash
+
+tax:
+  us:
+    dividend_withholding_rate: 0.30
+
+ledger:
+  base_currency: TWD
+
+cost_model:
+  tw:
+    commission_rate: 0.001425
+    commission_discount: 0.28
+    min_commission: 20.0
+    stock_transaction_tax_rate: 0.003
+    etf_transaction_tax_rate: 0.001
+    slippage_bps: 1.0
+  us:
+    commission_per_share: 0.0
+    min_commission: 0.0
+    sec_fee_rate: 0.0000278
+    finra_taf_per_share: 0.000166
+    finra_taf_cap: 8.30
+    slippage_bps: 1.0
+  fx:
+    spread_bps: 10.0
