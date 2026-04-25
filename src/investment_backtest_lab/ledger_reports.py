@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -373,6 +374,7 @@ def write_ledger_report(
     output_dir: Path,
     slug: str,
     config_path: Path,
+    report_context: dict[str, Any] | None = None,
 ) -> LedgerReportResult:
     output_dir.mkdir(parents=True, exist_ok=True)
     warnings = [warning for result in results for warning in result.warnings]
@@ -421,9 +423,19 @@ def write_ledger_report(
     )
     write_ledger_html(
         equity=equity,
+        metrics=metrics,
+        trades=trades,
         dividends=dividends,
         cash_flows=cash_flows,
+        warnings=warnings,
         output_path=html_path,
+        config_path=config_path,
+        metrics_path=metrics_path,
+        trades_path=trades_path,
+        dividends_path=dividends_path,
+        cash_flows_path=cash_flows_path,
+        equity_path=equity_path,
+        report_context=report_context,
     )
 
     return LedgerReportResult(
@@ -496,112 +508,1214 @@ def render_ledger_markdown(
 def write_ledger_html(
     *,
     equity: pd.DataFrame,
+    metrics: pd.DataFrame,
+    trades: pd.DataFrame,
     dividends: pd.DataFrame,
     cash_flows: pd.DataFrame,
+    warnings: list[str],
     output_path: Path,
+    config_path: Path,
+    metrics_path: Path,
+    trades_path: Path,
+    dividends_path: Path,
+    cash_flows_path: Path,
+    equity_path: Path,
+    report_context: dict[str, Any] | None = None,
 ) -> Path:
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
+    preferred_metrics = _preferred_basis_metrics(metrics)
+    context = report_context or {}
+    dashboard_html = _render_ledger_dashboard_html(
+        equity=equity,
+        metrics=metrics,
+        preferred_metrics=preferred_metrics,
+        trades=trades,
+        dividends=dividends,
+        cash_flows=cash_flows,
+        warnings=warnings,
+        output_path=output_path,
+        config_path=config_path,
+        metrics_path=metrics_path,
+        trades_path=trades_path,
+        dividends_path=dividends_path,
+        cash_flows_path=cash_flows_path,
+        equity_path=equity_path,
+        report_context=context,
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(dashboard_html, encoding="utf-8")
+    return output_path
 
-    figure = make_subplots(
-        rows=4,
-        cols=1,
-        shared_xaxes=True,
-        subplot_titles=(
-            "TWD Equity",
-            "USD Equity",
-            "Drawdown",
-            "Cash / Market Value / Dividends",
-        ),
-        vertical_spacing=0.08,
+
+def _render_ledger_dashboard_html(
+    *,
+    equity: pd.DataFrame,
+    metrics: pd.DataFrame,
+    preferred_metrics: pd.DataFrame,
+    trades: pd.DataFrame,
+    dividends: pd.DataFrame,
+    cash_flows: pd.DataFrame,
+    warnings: list[str],
+    output_path: Path,
+    config_path: Path,
+    metrics_path: Path,
+    trades_path: Path,
+    dividends_path: Path,
+    cash_flows_path: Path,
+    equity_path: Path,
+    report_context: dict[str, Any],
+) -> str:
+    settings_html = _render_settings_overview(metrics, report_context, config_path)
+    kpi_html = _render_kpi_cards(preferred_metrics)
+    scenario_table = _render_metrics_html_table(preferred_metrics)
+    chart_sections = _render_dashboard_charts(equity, preferred_metrics)
+    audit_html = _render_audit_section(
+        output_path=output_path,
+        metrics_path=metrics_path,
+        trades_path=trades_path,
+        dividends_path=dividends_path,
+        cash_flows_path=cash_flows_path,
+        equity_path=equity_path,
+        trades=trades,
+        dividends=dividends,
+        cash_flows=cash_flows,
+    )
+    warning_html = _render_warning_section(warnings)
+    style = _ledger_dashboard_css()
+    generated_at = escape(str(report_context.get("generated_at", "依目前資料產生")))
+    font_url = (
+        "https://fonts.googleapis.com/css2?"
+        "family=Noto+Sans+JP:wght@400;500;600;700&"
+        "family=Noto+Sans+TC:wght@400;500;600;700&display=swap"
     )
 
-    group_columns = ["ticker", "strategy", "dividend_mode"]
-    for (ticker, strategy, mode), group in equity.groupby(group_columns):
-        name = f"{ticker} {strategy} {mode}"
+    return f"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>投資回測 Dashboard | US Ledger Audit Report</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="{font_url}" rel="stylesheet">
+  <style>{style}</style>
+</head>
+<body>
+  <main class="dashboard-shell">
+    <header class="dashboard-header">
+      <div>
+        <p class="eyebrow">US Ledger Audit Report</p>
+        <h1>投資回測 Dashboard</h1>
+        <p class="header-copy">
+          用 raw price、股息、成本、稅與 USD/TWD 匯率重建可審計現金流，
+          第一屏先確認設定，再閱讀績效與明細。
+        </p>
+      </div>
+      <div class="header-meta">
+        <span>產生時間</span>
+        <strong>{generated_at}</strong>
+      </div>
+    </header>
+
+    <section class="section-block section-tight" aria-labelledby="settings-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Run Setup</p>
+          <h2 id="settings-title">設定總覽</h2>
+        </div>
+        <p>先確認期間、標的、策略、DCA、股息、成本與稅率；這些假設會直接影響所有圖表。</p>
+      </div>
+      {settings_html}
+    </section>
+
+    <section class="section-block" aria-labelledby="kpi-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Snapshot</p>
+          <h2 id="kpi-title">關鍵績效</h2>
+        </div>
+        <p>KPI 以主要報表幣別中「期末資產最高」的情境作為焦點；完整比較請看下方情境表。</p>
+      </div>
+      {kpi_html}
+    </section>
+
+    <section class="section-block" aria-labelledby="scenario-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Scenario Matrix</p>
+          <h2 id="scenario-title">策略與股息模式比較</h2>
+        </div>
+        <p>技術代號保留在表格裡：ledger_buy_and_hold、ledger_dca、cash、reinvest，方便對回 CSV。</p>
+      </div>
+      {scenario_table}
+    </section>
+
+    <section class="section-block" aria-labelledby="chart-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Charts</p>
+          <h2 id="chart-title">互動圖表</h2>
+        </div>
+        <p>圖例只保留短名稱；完整策略、模式與 ticker 會在 hover 提示與情境表中呈現。</p>
+      </div>
+      <div class="legend-guide">
+        <span><b>B&amp;H</b> = ledger_buy_and_hold</span>
+        <span><b>DCA</b> = ledger_dca</span>
+        <span><b>現金</b> = cash</span>
+        <span><b>再投</b> = reinvest</span>
+      </div>
+      {chart_sections}
+    </section>
+
+    {audit_html}
+
+    {warning_html}
+  </main>
+</body>
+</html>
+"""
+
+
+def _render_dashboard_charts(equity: pd.DataFrame, metrics: pd.DataFrame) -> str:
+    import plotly.graph_objects as go
+
+    color_map = _scenario_color_map(equity)
+    charts = [
+        (
+            "twd-equity-chart",
+            "TWD 權益曲線",
+            "用 USD/TWD 匯率換算後的主要報表幣別結果。",
+            _build_equity_figure(
+                go,
+                equity,
+                value_column="total_equity_twd",
+                yaxis_title="TWD",
+                color_map=color_map,
+            ),
+        ),
+        (
+            "usd-equity-chart",
+            "USD 原幣權益曲線",
+            "不含換匯影響，用來觀察標的本身與策略現金流。",
+            _build_equity_figure(
+                go,
+                equity,
+                value_column="total_equity",
+                yaxis_title="USD",
+                color_map=color_map,
+            ),
+        ),
+        (
+            "drawdown-chart",
+            "最大回撤路徑",
+            "以 USD 權益曲線計算，DCA 因外部現金流會以輔助視角閱讀。",
+            _build_drawdown_figure(go, equity, color_map),
+        ),
+        (
+            "contribution-chart",
+            "投入本金 vs 期末資產",
+            "DCA 以每期投入日匯率換算投入本金；B&H 以期初投入資金換算。",
+            _build_contribution_figure(go, metrics),
+        ),
+        (
+            "frictions-chart",
+            "股息 / 稅 / 費用",
+            "比較各情境收到的稅前股息、股息預扣稅與交易成本。",
+            _build_frictions_figure(go, metrics),
+        ),
+        (
+            "cash-market-chart",
+            "現金與市值",
+            "實線是持股市值，虛線是現金；可檢查股息留存與再投入差異。",
+            _build_cash_market_figure(go, equity, color_map),
+        ),
+    ]
+
+    sections: list[str] = []
+    for index, (chart_id, title, description, figure) in enumerate(charts):
+        include_plotly = "cdn" if index == 0 else False
+        chart_html = figure.to_html(
+            full_html=False,
+            include_plotlyjs=include_plotly,
+            config={"displaylogo": False, "responsive": True},
+        )
+        sections.append(
+            f"""<article class="chart-card" id="{chart_id}">
+  <div class="chart-heading">
+    <h3>{escape(title)}</h3>
+    <p>{escape(description)}</p>
+  </div>
+  {chart_html}
+</article>"""
+        )
+    return "\n".join(sections)
+
+
+def _build_equity_figure(
+    go: Any,
+    equity: pd.DataFrame,
+    *,
+    value_column: str,
+    yaxis_title: str,
+    color_map: dict[tuple[str, str, str], str],
+) -> Any:
+    figure = go.Figure()
+    has_trace = False
+    if value_column in equity.columns:
+        for key, group in _iter_equity_groups(equity):
+            group = group.dropna(subset=[value_column])
+            if group.empty:
+                continue
+            has_trace = True
+            dates = pd.to_datetime(group["date"])
+            figure.add_trace(
+                go.Scatter(
+                    x=dates,
+                    y=group[value_column],
+                    mode="lines",
+                    name=_scenario_short(*key),
+                    legendgroup=_scenario_id(*key),
+                    line={"color": color_map[key], "width": 2.2},
+                    hovertemplate=(
+                        f"{_scenario_full(*key)}<br>%{{x|%Y-%m-%d}}"
+                        f"<br>{yaxis_title}: %{{y:,.2f}}<extra></extra>"
+                    ),
+                )
+            )
+    if not has_trace:
+        _add_empty_annotation(figure, "沒有可繪製的權益曲線資料")
+    return _style_plotly_figure(figure, yaxis_title=yaxis_title)
+
+
+def _build_drawdown_figure(
+    go: Any,
+    equity: pd.DataFrame,
+    color_map: dict[tuple[str, str, str], str],
+) -> Any:
+    figure = go.Figure()
+    has_trace = False
+    for key, group in _iter_equity_groups(equity):
+        if "total_equity" not in group.columns:
+            continue
+        has_trace = True
         dates = pd.to_datetime(group["date"])
-        figure.add_trace(
-            go.Scatter(x=dates, y=group["total_equity_twd"], mode="lines", name=f"{name} TWD"),
-            row=1,
-            col=1,
-        )
-        figure.add_trace(
-            go.Scatter(x=dates, y=group["total_equity"], mode="lines", name=f"{name} USD"),
-            row=2,
-            col=1,
-        )
-        drawdown = _drawdown(group["total_equity"])
-        figure.add_trace(
-            go.Scatter(x=dates, y=drawdown, mode="lines", name=f"{name} drawdown"),
-            row=3,
-            col=1,
-        )
-        figure.add_trace(
-            go.Scatter(x=dates, y=group["cash"], mode="lines", name=f"{name} cash"),
-            row=4,
-            col=1,
-        )
         figure.add_trace(
             go.Scatter(
                 x=dates,
-                y=group["market_value"],
+                y=_drawdown(group["total_equity"]),
                 mode="lines",
-                name=f"{name} market value",
-            ),
-            row=4,
-            col=1,
+                name=_scenario_short(*key),
+                legendgroup=_scenario_id(*key),
+                line={"color": color_map[key], "width": 2},
+                hovertemplate=(
+                    f"{_scenario_full(*key)}<br>%{{x|%Y-%m-%d}}"
+                    "<br>回撤: %{y:.2%}<extra></extra>"
+                ),
+            )
         )
+    if not has_trace:
+        _add_empty_annotation(figure, "沒有可繪製的回撤資料")
+    figure = _style_plotly_figure(figure, yaxis_title="Drawdown")
+    figure.update_yaxes(tickformat=".0%")
+    return figure
 
-    if not dividends.empty:
-        dividends = dividends.copy()
-        dividends["date"] = pd.to_datetime(dividends["date"])
-        for (ticker, strategy, mode), group in dividends.groupby(group_columns):
-            figure.add_trace(
-                go.Bar(
-                    x=group["date"],
-                    y=group["net_amount"],
-                    name=f"{ticker} {strategy} {mode} net dividend",
-                    opacity=0.45,
-                ),
-                row=4,
-                col=1,
-            )
-            figure.add_trace(
-                go.Bar(
-                    x=group["date"],
-                    y=group["withholding_tax"],
-                    name=f"{ticker} {strategy} {mode} withholding tax",
-                    opacity=0.45,
-                ),
-                row=4,
-                col=1,
-            )
 
-    if not cash_flows.empty:
-        cash_flows = cash_flows.copy()
-        cash_flows["date"] = pd.to_datetime(cash_flows["date"])
-        for (ticker, strategy, mode), group in cash_flows.groupby(group_columns):
-            figure.add_trace(
-                go.Bar(
-                    x=group["date"],
-                    y=group["amount"],
-                    name=f"{ticker} {strategy} {mode} deposit",
-                    opacity=0.30,
-                ),
-                row=4,
-                col=1,
-            )
+def _build_contribution_figure(go: Any, metrics: pd.DataFrame) -> Any:
+    figure = go.Figure()
+    if metrics.empty:
+        _add_empty_annotation(figure, "沒有可比較的投入與期末資產資料")
+        return _style_plotly_figure(figure, yaxis_title="Amount")
 
-    figure.update_layout(
-        title="US Ledger Audit Report",
-        hovermode="x unified",
-        barmode="stack",
-        height=1100,
-        legend=dict(orientation="h"),
+    x = [
+        _scenario_short(row.ticker, row.strategy, row.dividend_mode)
+        for row in metrics.itertuples()
+    ]
+    figure.add_trace(
+        go.Bar(
+            x=x,
+            y=metrics["total_contributed"],
+            name="投入本金",
+            marker_color="#6f8375",
+            hovertemplate="投入本金: %{y:,.2f}<extra></extra>",
+        )
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.write_html(str(output_path), include_plotlyjs="cdn")
-    return output_path
+    figure.add_trace(
+        go.Bar(
+            x=x,
+            y=metrics["ending_equity"],
+            name="期末資產",
+            marker_color="#3f5f73",
+            hovertemplate="期末資產: %{y:,.2f}<extra></extra>",
+        )
+    )
+    figure.update_layout(barmode="group")
+    return _style_plotly_figure(figure, yaxis_title=str(metrics["basis"].iloc[0]))
+
+
+def _build_frictions_figure(go: Any, metrics: pd.DataFrame) -> Any:
+    figure = go.Figure()
+    if metrics.empty:
+        _add_empty_annotation(figure, "沒有股息、稅或費用資料")
+        return _style_plotly_figure(figure, yaxis_title="Amount")
+
+    x = [
+        _scenario_short(row.ticker, row.strategy, row.dividend_mode)
+        for row in metrics.itertuples()
+    ]
+    series = [
+        ("稅前股息", "gross_dividends", "#6f8375"),
+        ("股息預扣稅", "withholding_tax", "#b66f52"),
+        ("交易費用", "fees_paid", "#7f6d9d"),
+    ]
+    for name, column, color in series:
+        figure.add_trace(
+            go.Bar(
+                x=x,
+                y=metrics[column],
+                name=name,
+                marker_color=color,
+                hovertemplate=f"{name}: %{{y:,.2f}}<extra></extra>",
+            )
+        )
+    figure.update_layout(barmode="group")
+    return _style_plotly_figure(figure, yaxis_title=str(metrics["basis"].iloc[0]))
+
+
+def _build_cash_market_figure(
+    go: Any,
+    equity: pd.DataFrame,
+    color_map: dict[tuple[str, str, str], str],
+) -> Any:
+    figure = go.Figure()
+    has_trace = False
+    for key, group in _iter_equity_groups(equity):
+        dates = pd.to_datetime(group["date"])
+        color = color_map[key]
+        if "market_value" in group.columns:
+            has_trace = True
+            figure.add_trace(
+                go.Scatter(
+                    x=dates,
+                    y=group["market_value"],
+                    mode="lines",
+                    name=f"{_scenario_short(*key)} 市值",
+                    legendgroup=_scenario_id(*key),
+                    line={"color": color, "width": 2},
+                    hovertemplate=(
+                        f"{_scenario_full(*key)}<br>%{{x|%Y-%m-%d}}"
+                        "<br>市值: %{y:,.2f}<extra></extra>"
+                    ),
+                )
+            )
+        if "cash" in group.columns:
+            has_trace = True
+            figure.add_trace(
+                go.Scatter(
+                    x=dates,
+                    y=group["cash"],
+                    mode="lines",
+                    name=f"{_scenario_short(*key)} 現金",
+                    legendgroup=_scenario_id(*key),
+                    line={"color": color, "width": 1.8, "dash": "dash"},
+                    hovertemplate=(
+                        f"{_scenario_full(*key)}<br>%{{x|%Y-%m-%d}}"
+                        "<br>現金: %{y:,.2f}<extra></extra>"
+                    ),
+                )
+            )
+    if not has_trace:
+        _add_empty_annotation(figure, "沒有可繪製的現金與市值資料")
+    return _style_plotly_figure(figure, yaxis_title="USD")
+
+
+def _style_plotly_figure(figure: Any, *, yaxis_title: str) -> Any:
+    figure.update_layout(
+        template="plotly_white",
+        paper_bgcolor="#ffffff",
+        plot_bgcolor="#ffffff",
+        font={
+            "family": "Noto Sans TC, Noto Sans JP, Segoe UI, sans-serif",
+            "color": "#202521",
+            "size": 12,
+        },
+        margin={"l": 60, "r": 24, "t": 28, "b": 56},
+        hovermode="x unified",
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "left",
+            "x": 0,
+            "font": {"size": 11},
+        },
+    )
+    figure.update_xaxes(showgrid=False, zeroline=False)
+    figure.update_yaxes(title=yaxis_title, gridcolor="#e6e8e1", zeroline=False)
+    return figure
+
+
+def _add_empty_annotation(figure: Any, message: str) -> None:
+    figure.add_annotation(
+        text=message,
+        x=0.5,
+        y=0.5,
+        xref="paper",
+        yref="paper",
+        showarrow=False,
+        font={"color": "#66706a", "size": 14},
+    )
+
+
+def _render_settings_overview(
+    metrics: pd.DataFrame,
+    report_context: dict[str, Any],
+    config_path: Path,
+) -> str:
+    start = report_context.get("start_date") or _first_metric_value(metrics, "start")
+    end = report_context.get("end_date") or _first_metric_value(metrics, "end")
+    tickers = report_context.get("tickers") or sorted(metrics["ticker"].dropna().unique())
+    strategy_ids = sorted(metrics["strategy"].dropna().unique()) if "strategy" in metrics else []
+    mode_ids = (
+        sorted(metrics["dividend_mode"].dropna().unique()) if "dividend_mode" in metrics else []
+    )
+    price_sources = (
+        sorted(metrics["price_source"].dropna().unique()) if "price_source" in metrics else []
+    )
+    dividend_sources = (
+        sorted(metrics["dividend_source"].dropna().unique()) if "dividend_source" in metrics else []
+    )
+    cost_summary = report_context.get("cost_summary", "成本設定未提供；請回看 config。")
+    tax_summary = report_context.get("tax_summary", "稅率設定未提供；請回看 config。")
+
+    items = [
+        ("期間", f"{start} → {end}"),
+        ("標的", _join_display_values(tickers)),
+        (
+            "策略",
+            _join_display_values(_strategy_label_with_id(strategy) for strategy in strategy_ids),
+        ),
+        (
+            "股息模式",
+            _join_display_values(_mode_label_with_id(mode) for mode in mode_ids),
+        ),
+        ("初始資金", _money_with_currency(report_context.get("initial_cash"), "USD")),
+        (
+            "DCA",
+            (
+                f"{_money_with_currency(report_context.get('dca_contribution'), 'USD')} / "
+                f"{report_context.get('dca_frequency', '未提供')}"
+            ),
+        ),
+        (
+            "幣別",
+            (
+                f"account={report_context.get('account_currency', 'USD')} · "
+                f"base={report_context.get('base_currency', 'TWD')}"
+            ),
+        ),
+        (
+            "資料來源",
+            (
+                f"price={_join_display_values(price_sources)} / "
+                f"dividend={_join_display_values(dividend_sources)}"
+            ),
+        ),
+        ("成本", cost_summary),
+        ("稅率", tax_summary),
+        ("設定檔", str(config_path)),
+    ]
+    cards = "\n".join(
+        f"""<div class="setting-card">
+  <dt>{escape(label)}</dt>
+  <dd>{escape(str(value))}</dd>
+</div>"""
+        for label, value in items
+    )
+    return f"<dl class=\"settings-grid\">{cards}</dl>"
+
+
+def _render_kpi_cards(metrics: pd.DataFrame) -> str:
+    if metrics.empty:
+        return '<p class="empty-state">沒有可顯示的 KPI。</p>'
+
+    focus = metrics.loc[metrics["ending_equity"].astype(float).idxmax()]
+    comparable_drawdowns = metrics["max_drawdown"].dropna()
+    drawdown = focus["max_drawdown"]
+    drawdown_note = "焦點情境"
+    if pd.isna(drawdown) and not comparable_drawdowns.empty:
+        drawdown = comparable_drawdowns.min()
+        drawdown_note = "取可比較情境"
+
+    cards = [
+        (
+            "焦點情境",
+            _scenario_full(focus.ticker, focus.strategy, focus.dividend_mode),
+            "完整比較見情境表",
+        ),
+        ("期末資產", _format_money_or_blank(focus.ending_equity), str(focus.basis)),
+        ("投入本金", _format_money_or_blank(focus.total_contributed), "外部現金流已納入"),
+        (
+            "Simple Cash Return",
+            _format_percent_or_blank(focus.simple_cash_return),
+            "適合 DCA 第一版閱讀",
+        ),
+        ("最大回撤", _format_percent_or_blank(drawdown), drawdown_note),
+        ("稅前股息", _format_money_or_blank(focus.gross_dividends), str(focus.basis)),
+        ("預扣稅", _format_money_or_blank(focus.withholding_tax), str(focus.basis)),
+        ("交易費用", _format_money_or_blank(focus.fees_paid), str(focus.basis)),
+        ("最後持股", _format_shares_or_blank(focus.final_shares), str(focus.ticker)),
+    ]
+    cards_html = "\n".join(
+        f"""<article class="kpi-card">
+  <span>{escape(label)}</span>
+  <strong>{escape(value)}</strong>
+  <small>{escape(note)}</small>
+</article>"""
+        for label, value, note in cards
+    )
+    return f'<div class="kpi-grid">{cards_html}</div>'
+
+
+def _render_metrics_html_table(metrics: pd.DataFrame) -> str:
+    if metrics.empty:
+        return '<p class="empty-state">沒有情境指標。</p>'
+
+    display = metrics.copy()
+    display.insert(
+        0,
+        "scenario",
+        [
+            _scenario_full(row.ticker, row.strategy, row.dividend_mode)
+            for row in display.itertuples()
+        ],
+    )
+    for column in ["simple_cash_return", "total_return", "cagr", "max_drawdown"]:
+        display[column] = display[column].map(_format_percent_or_blank)
+    for column in [
+        "ending_equity",
+        "total_contributed",
+        "gross_dividends",
+        "withholding_tax",
+        "fees_paid",
+        "cash",
+    ]:
+        display[column] = display[column].map(_format_money_or_blank)
+    display["final_shares"] = display["final_shares"].map(_format_shares_or_blank)
+    columns = [
+        ("scenario", "情境"),
+        ("basis", "幣別"),
+        ("ending_equity", "期末資產"),
+        ("total_contributed", "投入本金"),
+        ("simple_cash_return", "Simple Return"),
+        ("max_drawdown", "最大回撤"),
+        ("gross_dividends", "稅前股息"),
+        ("withholding_tax", "預扣稅"),
+        ("fees_paid", "費用"),
+        ("final_shares", "最後持股"),
+        ("cash", "現金"),
+    ]
+    return _html_table(display, columns, css_class="wide-table")
+
+
+def _render_audit_section(
+    *,
+    output_path: Path,
+    metrics_path: Path,
+    trades_path: Path,
+    dividends_path: Path,
+    cash_flows_path: Path,
+    equity_path: Path,
+    trades: pd.DataFrame,
+    dividends: pd.DataFrame,
+    cash_flows: pd.DataFrame,
+) -> str:
+    links = [
+        ("指標 CSV", metrics_path),
+        ("交易明細 CSV", trades_path),
+        ("股息明細 CSV", dividends_path),
+        ("外部現金流 CSV", cash_flows_path),
+        ("權益曲線 CSV", equity_path),
+    ]
+    link_parts = []
+    for label, path in links:
+        href = escape(_relative_report_path(path, output_path))
+        link_parts.append(f'<a class="download-link" href="{href}">{escape(label)}</a>')
+    link_html = "\n".join(link_parts)
+    trades_table = _render_event_table(
+        trades,
+        [
+            ("date", "日期"),
+            ("ticker", "標的"),
+            ("strategy", "策略"),
+            ("dividend_mode", "股息模式"),
+            ("side", "方向"),
+            ("quantity", "股數"),
+            ("price", "價格"),
+            ("fees", "費用"),
+            ("net_cash_flow", "現金流"),
+            ("note", "備註"),
+        ],
+    )
+    dividend_table = _render_event_table(
+        dividends,
+        [
+            ("date", "日期"),
+            ("ticker", "標的"),
+            ("strategy", "策略"),
+            ("dividend_mode", "股息模式"),
+            ("shares", "股數"),
+            ("gross_amount", "稅前股息"),
+            ("withholding_tax", "預扣稅"),
+            ("net_amount", "淨額"),
+            ("reinvested_quantity", "再投入股數"),
+        ],
+    )
+    cash_flow_table = _render_event_table(
+        cash_flows,
+        [
+            ("date", "日期"),
+            ("ticker", "標的"),
+            ("strategy", "策略"),
+            ("dividend_mode", "股息模式"),
+            ("kind", "類型"),
+            ("amount", "金額"),
+            ("currency", "幣別"),
+            ("note", "備註"),
+        ],
+    )
+    return f"""<section class="section-block" aria-labelledby="audit-title">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Audit Trail</p>
+      <h2 id="audit-title">審計明細與 CSV 下載</h2>
+    </div>
+    <p>HTML 用來閱讀，CSV 用來追查每一筆交易、股息、投入與每日權益。</p>
+  </div>
+  <div class="download-row" aria-label="CSV 下載">{link_html}</div>
+  <div class="audit-grid">
+    <article class="audit-card"><h3>最近交易</h3>{trades_table}</article>
+    <article class="audit-card"><h3>最近股息</h3>{dividend_table}</article>
+    <article class="audit-card"><h3>最近現金流</h3>{cash_flow_table}</article>
+  </div>
+</section>"""
+
+
+def _render_event_table(df: pd.DataFrame, columns: list[tuple[str, str]]) -> str:
+    if df.empty:
+        return '<p class="empty-state">沒有資料。</p>'
+    available = [(column, label) for column, label in columns if column in df.columns]
+    return _html_table(df.tail(8), available, css_class="compact-table")
+
+
+def _render_warning_section(warnings: list[str]) -> str:
+    warning_items = "".join(
+        f"<li>{escape(warning)}</li>" for warning in warnings
+    ) or "<li>目前沒有資料對齊警告。</li>"
+    return f"""<section class="section-block limitations" aria-labelledby="warning-title">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Limitations</p>
+      <h2 id="warning-title">警告與限制</h2>
+    </div>
+    <p>這是研究報表，不是投資建議；正式決策前仍需確認資料授權、資料品質與稅務假設。</p>
+  </div>
+  <ul>
+    {warning_items}
+    <li>
+      yfinance dividend date 在 v1 先視為可入帳日期；
+      精確 ex-date/payment-date 差異留到後續強化。
+    </li>
+    <li>v1 支援 fractional shares，不模擬券商是否允許碎股。</li>
+    <li>DCA 的 CAGR/Sharpe 暫不作主要結論，避免外部現金流造成誤讀。</li>
+  </ul>
+</section>"""
+
+
+def _html_table(
+    df: pd.DataFrame,
+    columns: list[tuple[str, str]],
+    *,
+    css_class: str,
+) -> str:
+    headers = "".join(f"<th>{escape(label)}</th>" for _, label in columns)
+    rows: list[str] = []
+    for _, row in df.iterrows():
+        cells = "".join(
+            f"<td>{escape(_format_html_cell(row.get(column)))}</td>"
+            for column, _ in columns
+        )
+        rows.append(f"<tr>{cells}</tr>")
+    body = "\n".join(rows) if rows else '<tr><td colspan="99">沒有資料。</td></tr>'
+    return f"""<div class="table-wrap">
+  <table class="{css_class}">
+    <thead><tr>{headers}</tr></thead>
+    <tbody>{body}</tbody>
+  </table>
+</div>"""
+
+
+def _format_html_cell(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    if isinstance(value, pd.Timestamp):
+        return value.date().isoformat()
+    if hasattr(value, "isoformat") and not isinstance(value, str):
+        try:
+            return value.isoformat()
+        except TypeError:
+            pass
+    if isinstance(value, (float, np.floating)):
+        return f"{float(value):,.4f}".rstrip("0").rstrip(".")
+    if isinstance(value, (int, np.integer)):
+        return f"{int(value):,}"
+    return str(value)
+
+
+def _preferred_basis_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
+    if metrics.empty or "basis" not in metrics.columns:
+        return metrics.copy()
+    for basis in ["TWD", "USD"]:
+        preferred = metrics[metrics["basis"] == basis]
+        if not preferred.empty:
+            return preferred.copy()
+    return metrics.copy()
+
+
+def _iter_equity_groups(equity: pd.DataFrame) -> list[tuple[tuple[str, str, str], pd.DataFrame]]:
+    if equity.empty:
+        return []
+    group_columns = ["ticker", "strategy", "dividend_mode"]
+    return [
+        ((str(ticker), str(strategy), str(mode)), group.sort_values("date"))
+        for (ticker, strategy, mode), group in equity.groupby(group_columns, sort=True)
+    ]
+
+
+def _scenario_color_map(equity: pd.DataFrame) -> dict[tuple[str, str, str], str]:
+    palette = [
+        "#3f5f73",
+        "#6f8375",
+        "#b66f52",
+        "#7f6d9d",
+        "#c09a4c",
+        "#52665b",
+        "#8a6f56",
+        "#5c6f92",
+        "#9b7a8f",
+        "#557d86",
+    ]
+    return {
+        key: palette[index % len(palette)]
+        for index, (key, _) in enumerate(_iter_equity_groups(equity))
+    }
+
+
+def _scenario_id(ticker: str, strategy: str, mode: str) -> str:
+    return f"{ticker}-{strategy}-{mode}"
+
+
+def _scenario_short(ticker: str, strategy: str, mode: str) -> str:
+    return f"{ticker} {_strategy_short(strategy)} {_mode_short(mode)}"
+
+
+def _scenario_full(ticker: str, strategy: str, mode: str) -> str:
+    return f"{ticker} · {_strategy_label(strategy)} ({strategy}) · {_mode_label(mode)} ({mode})"
+
+
+def _strategy_short(strategy: str) -> str:
+    return {"ledger_buy_and_hold": "B&H", "ledger_dca": "DCA"}.get(strategy, strategy)
+
+
+def _strategy_label(strategy: str) -> str:
+    return {
+        "ledger_buy_and_hold": "Buy and Hold",
+        "ledger_dca": "定期定額",
+    }.get(strategy, strategy)
+
+
+def _strategy_label_with_id(strategy: str) -> str:
+    return f"{_strategy_label(strategy)} ({strategy})"
+
+
+def _mode_short(mode: str) -> str:
+    return {"cash": "現金", "reinvest": "再投"}.get(mode, mode)
+
+
+def _mode_label(mode: str) -> str:
+    return {"cash": "現金股息", "reinvest": "股息再投入"}.get(mode, mode)
+
+
+def _mode_label_with_id(mode: str) -> str:
+    return f"{_mode_label(mode)} ({mode})"
+
+
+def _first_metric_value(metrics: pd.DataFrame, column: str) -> str:
+    if metrics.empty or column not in metrics.columns:
+        return "未提供"
+    value = metrics[column].dropna()
+    return str(value.iloc[0]) if not value.empty else "未提供"
+
+
+def _join_display_values(values: Any) -> str:
+    if isinstance(values, str):
+        return values
+    values = list(values)
+    return "、".join(str(value) for value in values) if values else "未提供"
+
+
+def _money_with_currency(value: Any, currency: str) -> str:
+    if value is None or pd.isna(value):
+        return "未提供"
+    return f"{float(value):,.2f} {currency}"
+
+
+def _relative_report_path(path: Path, output_path: Path) -> str:
+    try:
+        return str(path.relative_to(output_path.parent))
+    except ValueError:
+        return path.name
+
+
+def _ledger_dashboard_css() -> str:
+    return """
+:root {
+  --bg: #f7f6f1;
+  --surface: #ffffff;
+  --surface-soft: #eeefe8;
+  --ink: #202521;
+  --muted: #66706a;
+  --line: #d8ddd3;
+  --indigo: #3f5f73;
+  --sage: #6f8375;
+  --copper: #b66f52;
+  --gold: #c09a4c;
+  --shadow: 0 14px 36px rgba(32, 37, 33, 0.07);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Noto Sans TC", "Noto Sans JP", "Segoe UI", "Microsoft JhengHei", sans-serif;
+  letter-spacing: 0;
+}
+
+body {
+  margin: 0;
+  background:
+    linear-gradient(180deg, rgba(111, 131, 117, 0.08), rgba(247, 246, 241, 0) 420px),
+    var(--bg);
+  color: var(--ink);
+}
+
+.dashboard-shell {
+  width: min(1440px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 28px 0 56px;
+}
+
+.dashboard-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: end;
+  min-height: 150px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--shadow);
+}
+
+.dashboard-header h1 {
+  margin: 6px 0 10px;
+  font-size: clamp(2rem, 4vw, 3.2rem);
+  line-height: 1.05;
+  font-weight: 700;
+}
+
+.header-copy {
+  max-width: 760px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.header-meta {
+  min-width: 190px;
+  padding: 16px;
+  border-left: 3px solid var(--sage);
+  background: var(--surface-soft);
+  border-radius: 8px;
+}
+
+.header-meta span,
+.eyebrow,
+.kpi-card span,
+.setting-card dt {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.header-meta strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 0.95rem;
+}
+
+.section-block {
+  margin-top: 18px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.section-tight {
+  margin-top: 14px;
+}
+
+.section-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: end;
+  margin-bottom: 18px;
+}
+
+.section-heading h2 {
+  margin: 4px 0 0;
+  font-size: 1.25rem;
+}
+
+.section-heading p {
+  max-width: 640px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.eyebrow {
+  margin: 0;
+  color: var(--indigo);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.setting-card,
+.kpi-card,
+.audit-card,
+.chart-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.setting-card {
+  min-height: 92px;
+  padding: 14px;
+  background: #fbfbf7;
+}
+
+.setting-card dd {
+  margin: 8px 0 0;
+  color: var(--ink);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.kpi-card {
+  padding: 16px;
+  background: linear-gradient(180deg, #ffffff, #fafaf6);
+}
+
+.kpi-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: clamp(1.2rem, 2.2vw, 1.8rem);
+  line-height: 1.15;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.kpi-card small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.legend-guide,
+.download-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.legend-guide span,
+.download-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.download-link:hover {
+  border-color: var(--indigo);
+  color: var(--indigo);
+}
+
+.chart-card {
+  margin-top: 14px;
+  padding: 18px;
+}
+
+.chart-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 8px;
+}
+
+.chart-heading h3,
+.audit-card h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.chart-heading p {
+  max-width: 620px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+th,
+td {
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 700;
+  background: #f4f5ee;
+}
+
+td {
+  color: var(--ink);
+}
+
+.wide-table td:first-child {
+  min-width: 270px;
+  white-space: normal;
+}
+
+.audit-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.audit-card {
+  padding: 16px;
+}
+
+.audit-card h3 {
+  margin-bottom: 12px;
+}
+
+.empty-state {
+  margin: 0;
+  color: var(--muted);
+}
+
+.limitations ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+@media (max-width: 980px) {
+  .dashboard-header,
+  .section-heading,
+  .chart-heading {
+    grid-template-columns: 1fr;
+    display: block;
+  }
+
+  .header-meta,
+  .section-heading p,
+  .chart-heading p {
+    margin-top: 14px;
+  }
+
+  .settings-grid,
+  .kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-shell {
+    width: min(100% - 20px, 1440px);
+    padding-top: 10px;
+  }
+
+  .dashboard-header,
+  .section-block {
+    padding: 18px;
+  }
+
+  .settings-grid,
+  .kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  th,
+  td {
+    padding: 9px;
+  }
+}
+"""
 
 
 def _metric_record(

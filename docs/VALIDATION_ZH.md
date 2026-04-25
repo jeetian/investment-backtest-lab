@@ -145,7 +145,7 @@ uv sync --extra dev
 - `basis=USD` 與 `basis=TWD` 都應出現在 metrics。
 - dividends CSV 要能看到 gross dividend、withholding tax、net amount。
 - cash flows CSV 要能看到 DCA 每月投入。
-- HTML 要能打開並看到 equity curve、drawdown、cash/market value、dividend/tax timeline。
+- HTML 要能打開並看到中文 dashboard shell、設定總覽、KPI、情境表、TWD/USD equity curve、drawdown、cash/market value、股息/稅/費用圖與 CSV 下載連結。
 
 ## 8. 排錯順序
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -98,6 +99,7 @@ def main() -> None:
         output_dir=Path(args.output_dir),
         slug=slug,
         config_path=Path(args.config),
+        report_context=build_report_context(config, selected_assets, args.dividend_modes),
     )
     print_terminal_summary(report.metrics, report.warnings)
     print(f"Markdown report: {report.markdown_path}")
@@ -107,6 +109,44 @@ def main() -> None:
     print(f"Cash flows CSV:  {report.cash_flows_path}")
     print(f"Equity CSV:      {report.equity_path}")
     print(f"HTML report:     {report.html_path}")
+
+
+def build_report_context(
+    config: Any,
+    selected_assets: list[AssetSpec],
+    dividend_modes: list[str],
+) -> dict[str, object]:
+    return {
+        "start_date": config.start_date.isoformat(),
+        "end_date": config.end_date.isoformat(),
+        "tickers": [asset.ticker for asset in selected_assets],
+        "dividend_modes": dividend_modes,
+        "initial_cash": config.ledger.initial_cash,
+        "dca_contribution": config.dca.contribution,
+        "dca_frequency": config.dca.frequency,
+        "account_currency": config.ledger.account_currency,
+        "base_currency": config.ledger.base_currency,
+        "generated_at": pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "cost_summary": format_us_cost_summary(config.cost_model),
+        "tax_summary": f"US dividend withholding {config.tax.us.dividend_withholding_rate:.0%}",
+    }
+
+
+def format_us_cost_summary(cost_model_config: dict[str, Any]) -> str:
+    us_cost = cost_model_config.get("us", {})
+    fx_cost = cost_model_config.get("fx", {})
+    if not isinstance(us_cost, dict):
+        us_cost = {}
+    if not isinstance(fx_cost, dict):
+        fx_cost = {}
+    return (
+        f"commission/share={us_cost.get('commission_per_share', 'n/a')} USD · "
+        f"min={us_cost.get('min_commission', 'n/a')} USD · "
+        f"SEC fee={us_cost.get('sec_fee_rate', 'n/a')} · "
+        f"FINRA TAF/share={us_cost.get('finra_taf_per_share', 'n/a')} · "
+        f"slippage={us_cost.get('slippage_bps', 'n/a')} bps · "
+        f"FX spread={fx_cost.get('spread_bps', 'n/a')} bps"
+    )
 
 
 def select_assets(universe: list[AssetSpec], tickers: list[str]) -> list[AssetSpec]:

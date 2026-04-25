@@ -292,5 +292,17 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert not report.cash_flows.empty
     assert "美股 Ledger 報表" in report.markdown_path.read_text(encoding="utf-8")
     assert "外部現金流 CSV" in report.markdown_path.read_text(encoding="utf-8")
-    assert "US Ledger Audit Report" in report.html_path.read_text(encoding="utf-8")
-    assert "deposit" in report.html_path.read_text(encoding="utf-8")
+    html = report.html_path.read_text(encoding="utf-8")
+    assert "US Ledger Audit Report" in html
+    assert "https://fonts.googleapis.com" in html
+    assert "Noto Sans TC" in html
+    assert "dashboard-shell" in html
+    assert "投資回測 Dashboard" in html
+    assert "設定總覽" in html
+    assert "關鍵績效" in html
+    assert "CSV 下載" in html
+    assert "ledger_buy_and_hold" in html
+    assert "ledger_dca" in html
+    assert "cash" in html
+    assert "reinvest" in html
+    assert "deposit" in html
