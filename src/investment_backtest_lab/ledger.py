@@ -71,6 +71,16 @@ class InterestEvent:
 
 
 @dataclass(frozen=True)
+class CashFlowEvent:
+    date: pd.Timestamp
+    asset: str
+    amount: float
+    currency: str
+    kind: str
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class PositionSnapshot:
     date: pd.Timestamp
     cash: float
@@ -112,6 +122,7 @@ class AccountLedger:
         self._fees: list[FeeEvent] = []
         self._taxes: list[TaxEvent] = []
         self._interest: list[InterestEvent] = []
+        self._cash_flows: list[CashFlowEvent] = []
         self._snapshots: list[PositionSnapshot] = []
 
     @property
@@ -139,6 +150,10 @@ class AccountLedger:
         return _events_to_frame(self._interest)
 
     @property
+    def cash_flows(self) -> pd.DataFrame:
+        return _events_to_frame(self._cash_flows)
+
+    @property
     def equity_curve(self) -> pd.DataFrame:
         return _events_to_frame(self._snapshots)
 
@@ -149,6 +164,33 @@ class AccountLedger:
     @property
     def total_taxes_paid(self) -> float:
         return float(sum(event.amount for event in self._taxes))
+
+    @property
+    def total_cash_deposited(self) -> float:
+        return float(
+            sum(event.amount for event in self._cash_flows if event.kind == "deposit")
+        )
+
+    def deposit(
+        self,
+        deposit_date: DateLike,
+        *,
+        amount: float,
+        note: str = "",
+    ) -> CashFlowEvent:
+        amount = _positive_float(amount, "amount")
+        timestamp = _to_timestamp(deposit_date)
+        self.cash += amount
+        event = CashFlowEvent(
+            date=timestamp,
+            asset=self.asset.ticker,
+            amount=amount,
+            currency=self.account_currency,
+            kind="deposit",
+            note=note,
+        )
+        self._cash_flows.append(event)
+        return event
 
     def buy(
         self,
@@ -452,6 +494,7 @@ def _ensure_cash_available(cash: float, required: float) -> None:
 
 __all__ = [
     "AccountLedger",
+    "CashFlowEvent",
     "DividendEvent",
     "FeeEvent",
     "InterestEvent",

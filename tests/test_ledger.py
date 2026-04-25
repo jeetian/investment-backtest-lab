@@ -111,6 +111,17 @@ def test_buy_with_cash_uses_only_affordable_cash_budget():
     assert ledger.positions["SPY"] == pytest.approx(2.5)
 
 
+def test_deposit_records_external_cash_flow():
+    ledger = AccountLedger(spy_asset(), starting_cash=0, cost_model=zero_cost_model())
+
+    event = ledger.deposit("2024-01-02", amount=1_000, note="DCA contribution")
+
+    assert event.amount == pytest.approx(1_000)
+    assert ledger.cash == pytest.approx(1_000)
+    assert ledger.total_cash_deposited == pytest.approx(1_000)
+    assert ledger.cash_flows.iloc[0]["kind"] == "deposit"
+
+
 def test_build_equity_curve_snapshots_each_price_date():
     ledger = AccountLedger(spy_asset(), starting_cash=1_000, cost_model=zero_cost_model())
     ledger.buy("2024-01-02", quantity=10, price=10)

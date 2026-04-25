@@ -60,6 +60,7 @@ uv sync --extra dev
 - 美股 account ledger golden cases
 - 美股 dividend data/cache golden cases
 - 美股 ledger report golden cases
+- 美股 DCA ledger golden cases
 - 中文文件 UTF-8 與 scope 連結
 
 ## 4. Import Smoke Test
@@ -132,15 +133,18 @@ uv sync --extra dev
 - `reports/ledger_spy_qqq_metrics.csv`
 - `reports/ledger_spy_qqq_trades.csv`
 - `reports/ledger_spy_qqq_dividends.csv`
+- `reports/ledger_spy_qqq_cash_flows.csv`
 - `reports/ledger_spy_qqq_equity.csv`
 - `reports/ledger_spy_qqq.html`
 
 驗證重點：
 
 - price source 應該是 raw price，不是 adjusted price。
+- `strategy=ledger_buy_and_hold` 與 `strategy=ledger_dca` 都應出現在 metrics。
 - `dividend_mode=cash` 與 `dividend_mode=reinvest` 都應出現在 metrics。
 - `basis=USD` 與 `basis=TWD` 都應出現在 metrics。
 - dividends CSV 要能看到 gross dividend、withholding tax、net amount。
+- cash flows CSV 要能看到 DCA 每月投入。
 - HTML 要能打開並看到 equity curve、drawdown、cash/market value、dividend/tax timeline。
 
 ## 8. 排錯順序

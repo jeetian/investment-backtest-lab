@@ -8,7 +8,11 @@ import pandas as pd
 from investment_backtest_lab.config import load_backtest_config
 from investment_backtest_lab.costs import CostModel
 from investment_backtest_lab.data import MarketDataLoader
-from investment_backtest_lab.ledger_reports import run_buy_and_hold_ledger, write_ledger_report
+from investment_backtest_lab.ledger_reports import (
+    run_buy_and_hold_ledger,
+    run_dca_ledger,
+    write_ledger_report,
+)
 from investment_backtest_lab.models import AssetSpec, AssetType, DataSource, DividendMode, Market
 
 
@@ -22,6 +26,12 @@ def main() -> None:
         nargs="+",
         default=[DividendMode.CASH.value, DividendMode.REINVEST.value],
         choices=[mode.value for mode in DividendMode],
+    )
+    parser.add_argument(
+        "--strategies",
+        nargs="+",
+        default=["buy_hold", "dca"],
+        choices=["buy_hold", "dca"],
     )
     args = parser.parse_args()
 
@@ -56,16 +66,29 @@ def main() -> None:
             end_date=end_date,
         )
         for mode in args.dividend_modes:
-            results.append(
-                run_buy_and_hold_ledger(
-                    price_frame=price_frame,
-                    dividend_frame=dividend_frame,
-                    cost_model=cost_model,
-                    initial_cash=config.ledger.initial_cash,
-                    dividend_mode=mode,
-                    withholding_rate=config.tax.us.dividend_withholding_rate,
+            if "buy_hold" in args.strategies:
+                results.append(
+                    run_buy_and_hold_ledger(
+                        price_frame=price_frame,
+                        dividend_frame=dividend_frame,
+                        cost_model=cost_model,
+                        initial_cash=config.ledger.initial_cash,
+                        dividend_mode=mode,
+                        withholding_rate=config.tax.us.dividend_withholding_rate,
+                    )
                 )
-            )
+            if "dca" in args.strategies:
+                results.append(
+                    run_dca_ledger(
+                        price_frame=price_frame,
+                        dividend_frame=dividend_frame,
+                        cost_model=cost_model,
+                        contribution=config.dca.contribution,
+                        frequency=config.dca.frequency,
+                        dividend_mode=mode,
+                        withholding_rate=config.tax.us.dividend_withholding_rate,
+                    )
+                )
 
     slug = "_".join(ticker.lower().replace("/", "_").replace("=", "_") for ticker in args.tickers)
     report = write_ledger_report(
@@ -81,6 +104,7 @@ def main() -> None:
     print(f"Metrics CSV:     {report.metrics_path}")
     print(f"Trades CSV:      {report.trades_path}")
     print(f"Dividends CSV:   {report.dividends_path}")
+    print(f"Cash flows CSV:  {report.cash_flows_path}")
     print(f"Equity CSV:      {report.equity_path}")
     print(f"HTML report:     {report.html_path}")
 
@@ -121,9 +145,12 @@ def print_terminal_summary(metrics: pd.DataFrame, warnings: list[str]) -> None:
     display = metrics[
         [
             "ticker",
+            "strategy",
             "dividend_mode",
             "basis",
             "ending_equity",
+            "total_contributed",
+            "simple_cash_return",
             "total_return",
             "cagr",
             "max_drawdown",
@@ -134,23 +161,36 @@ def print_terminal_summary(metrics: pd.DataFrame, warnings: list[str]) -> None:
             "cash",
         ]
     ].copy()
-    for column in ["total_return", "cagr", "max_drawdown"]:
-        display[column] = display[column].map(lambda value: f"{float(value):.2%}")
+    for column in ["simple_cash_return", "total_return", "cagr", "max_drawdown"]:
+        display[column] = display[column].map(format_percent_or_blank)
     for column in [
         "ending_equity",
+        "total_contributed",
         "gross_dividends",
         "withholding_tax",
         "fees_paid",
         "final_shares",
         "cash",
     ]:
-        display[column] = display[column].map(lambda value: f"{float(value):,.2f}")
+        display[column] = display[column].map(format_number_or_blank)
     print(display.to_string(index=False))
     if warnings:
         print("")
         print("警告")
         for warning in warnings:
             print(f"- {warning}")
+
+
+def format_percent_or_blank(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    return f"{float(value):.2%}"
+
+
+def format_number_or_blank(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    return f"{float(value):,.2f}"
 
 
 if __name__ == "__main__":

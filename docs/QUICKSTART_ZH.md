@@ -11,7 +11,7 @@
 - 一次 import smoke test：`vectorbt`、`bt`、`quantstats`、`yfinance`、`FinMind` 都可匯入
 - 一次離線 prototype 結果：均線策略摘要、DCA 摘要、Rolling 3Y CAGR
 - 一次 yfinance live data 檢查：`SPY`、`QQQ`、`USDTWD=X`
-- 一份可審計的美股 ledger 報表：raw price、股息、稅、成本、USD/TWD
+- 一份可審計的美股 ledger 報表：raw price、股息、稅、成本、DCA 現金流、USD/TWD
 
 ## 1. 1 分鐘確認環境
 
@@ -200,6 +200,7 @@ reports/ledger_spy_qqq.md
 reports/ledger_spy_qqq_metrics.csv
 reports/ledger_spy_qqq_trades.csv
 reports/ledger_spy_qqq_dividends.csv
+reports/ledger_spy_qqq_cash_flows.csv
 reports/ledger_spy_qqq_equity.csv
 reports/ledger_spy_qqq.html
 ```
@@ -208,6 +209,10 @@ reports/ledger_spy_qqq.html
 
 - `dividend_mode=cash`：股息扣除美股預扣稅後留現金。
 - `dividend_mode=reinvest`：股息扣稅後用對齊後交易日收盤價再投入。
+- `strategy=ledger_buy_and_hold`：期初一次投入後長期持有。
+- `strategy=ledger_dca`：每月第一個可交易日投入 `dca.contribution`，並把每次外部投入記錄到 cash flows。
+- `total_contributed`：投入本金；DCA 的 TWD 版本會用投入日 USD/TWD 匯率換算。
+- `simple_cash_return`：期末資產除以投入本金後的簡單現金報酬，適合 DCA 第一版閱讀。
 - `gross_dividends`：收到的稅前股息。
 - `withholding_tax`：美股股息預扣稅。
 - `fees_paid`：交易成本。
@@ -221,6 +226,12 @@ reports/ledger_spy_qqq.html
 ```
 
 目前 v1 規則：yfinance dividend date 先視為可入帳日期；若遇到非交易日，會對齊到下一個可交易日。精確 ex-date/payment-date 差異會在後續版本強化。
+
+如果只想跑其中一種 ledger 策略，可以加上 `--strategies`：
+
+```powershell
+uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ --strategies dca
+```
 
 ## 8. 設定 FinMind Token
 
@@ -323,7 +334,6 @@ uv run python scripts\smoke_data.py --network
 
 照這份 quickstart 跑通後，下一個自然步驟是：
 
-- 把 DCA 接入 ledger。
 - 把月/季再平衡接入 ledger。
 - 加入 FinMind token 後驗證 `0050`、`2330`。
 - Phase 1 收尾時另開一個 chat 做冷讀驗證。

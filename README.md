@@ -35,7 +35,7 @@ uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tick
 - yfinance live data smoke test：`SPY`、`QQQ`、`USDTWD=X` 通過
 - FinMind live data smoke test：目前因未設定 `FINMIND_TOKEN` 而跳過
 - quickstart SPY/QQQ 結果檢視報表
-- 美股 account ledger 核心與 ledger 報表 v1
+- 美股 account ledger 核心、buy-and-hold ledger 報表與 DCA ledger 報表
 - git baseline commit 已建立，後續里程碑可回溯
 
 驗證結果：
@@ -52,7 +52,7 @@ uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tick
 - `pytest`: 全部通過
 - `smoke_imports.py`: `pandas`、`vectorbt`、`bt`、`quantstats`、`yfinance`、`FinMind` 都顯示 `[OK]`
 - `run_prototype.py`: 會輸出均線策略摘要、DCA 摘要、Rolling 3Y CAGR
-- `analyze_ledger.py`: 會輸出 raw price + 股息 + 稅 + 成本的可審計 ledger 報表
+- `analyze_ledger.py`: 會輸出 raw price + 股息 + 稅 + 成本 + DCA 現金流的可審計 ledger 報表
 
 ## 專案目標
 
