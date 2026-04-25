@@ -363,6 +363,9 @@ class PortfolioLedger:
             excess_value = current_value - target_value
             if excess_value <= 1e-8:
                 continue
+            current_weight = current_value / total_equity
+            target_weight = weights.get(ticker, 0.0)
+            drift = current_weight - target_weight
             quantity = min(self.quantities[ticker], excess_value / clean_prices[ticker])
             if quantity > 1e-12:
                 trades.append(
@@ -371,7 +374,12 @@ class PortfolioLedger:
                         timestamp,
                         quantity=quantity,
                         price=clean_prices[ticker],
-                        note=note,
+                        note=(
+                            f"{note}; action=reduce overweight; "
+                            f"current_weight={current_weight:.4f}; "
+                            f"target_weight={target_weight:.4f}; "
+                            f"drift={drift:+.4f}"
+                        ),
                     )
                 )
 
@@ -384,12 +392,22 @@ class PortfolioLedger:
         for ticker, gap in sorted(gaps.items(), key=lambda item: item[1], reverse=True):
             if gap <= 1e-8 or self.cash <= 1e-8:
                 continue
+            target_weight = weights.get(ticker, 0.0)
+            current_weight = (
+                current_values[ticker] / post_sell_equity if post_sell_equity > 0 else 0.0
+            )
+            drift = current_weight - target_weight
             trade = self.buy_with_cash(
                 ticker,
                 timestamp,
                 cash_amount=min(gap, self.cash),
                 price=clean_prices[ticker],
-                note=note,
+                note=(
+                    f"{note}; action=increase underweight; "
+                    f"current_weight={current_weight:.4f}; "
+                    f"target_weight={target_weight:.4f}; "
+                    f"drift={drift:+.4f}"
+                ),
             )
             if trade is not None:
                 trades.append(trade)

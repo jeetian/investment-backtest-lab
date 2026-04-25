@@ -201,6 +201,7 @@ reports/ledger_spy_qqq_dividends.csv
 reports/ledger_spy_qqq_cash_flows.csv
 reports/ledger_spy_qqq_equity.csv
 reports/ledger_spy_qqq_positions.csv
+reports/ledger_spy_qqq_rebalance.csv
 reports/ledger_spy_qqq.html
 ```
 
@@ -231,8 +232,9 @@ reports/ledger_spy_qqq.html
 - 第一屏先看「設定總覽」：期間、標的、策略、DCA 金額、初始資金、再平衡權重、股息模式、基準幣別、資料來源、成本與稅率。
 - 再看「關鍵績效」：期末資產、投入本金、simple cash return、最大回撤、股息、預扣稅、費用與最後持股。
 - 「策略與股息模式比較」會保留 `ledger_buy_and_hold`、`ledger_dca`、`ledger_rebalance`、`cash`、`reinvest`，方便回到 CSV 追查。
+- 「再平衡讀法」會列出每次再平衡的交易數、買賣方向、交易金額、調整後權重與買賣原因。
 - 圖表圖例會使用短名稱，例如 `SPY B&H 現金`、`QQQ DCA 再投`、`SPY_QQQ Rebal 現金`；完整描述可看 hover 或上方情境表。
-- 最下方「審計明細與 CSV 下載」可以打開 trades、dividends、cash flows、equity、positions 等明細檔。
+- 最下方「審計明細與 CSV 下載」可以打開 trades、dividends、cash flows、equity、positions、rebalance 等明細檔。
 
 目前 v1 規則：yfinance dividend date 先視為可入帳日期；若遇到非交易日，會對齊到下一個可交易日。精確 ex-date/payment-date 差異會在後續版本強化。
 
@@ -343,6 +345,6 @@ uv run python scripts\smoke_data.py --network
 
 照這份 quickstart 跑通後，下一個自然步驟是：
 
-- 把月/季再平衡接入 ledger。
+- 擴充再平衡報表，檢查權重漂移、買賣原因與交易摩擦成本。
 - 加入 FinMind token 後驗證 `0050`、`2330`。
 - Phase 1 收尾時另開一個 chat 做冷讀驗證。

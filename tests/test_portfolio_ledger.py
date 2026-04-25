@@ -75,6 +75,10 @@ def test_second_rebalance_sells_overweight_asset_and_buys_underweight_asset():
     snapshot = ledger.snapshot("2024-02-01", prices={"SPY": 200, "QQQ": 100})
 
     assert [trade.side.value for trade in trades] == ["sell", "buy"]
+    assert "action=reduce overweight" in trades[0].note
+    assert "drift=+0.1500" in trades[0].note
+    assert "action=increase underweight" in trades[1].note
+    assert "drift=-0.1500" in trades[1].note
     assert ledger.positions["SPY"] == pytest.approx(48)
     assert ledger.positions["QQQ"] == pytest.approx(64)
     assert ledger.cash == pytest.approx(0)

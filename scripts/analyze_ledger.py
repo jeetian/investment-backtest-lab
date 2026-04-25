@@ -139,6 +139,7 @@ def main() -> None:
     print(f"Cash flows CSV:  {report.cash_flows_path}")
     print(f"Equity CSV:      {report.equity_path}")
     print(f"Positions CSV:   {report.positions_path}")
+    print(f"Rebalance CSV:   {report.rebalance_path}")
     print(f"HTML report:     {report.html_path}")
 
 

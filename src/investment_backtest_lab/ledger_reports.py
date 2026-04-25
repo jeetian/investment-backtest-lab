@@ -37,6 +37,7 @@ class LedgerReportResult:
     cash_flows: pd.DataFrame
     equity: pd.DataFrame
     positions: pd.DataFrame
+    rebalance: pd.DataFrame
     warnings: list[str]
     markdown_path: Path
     metrics_path: Path
@@ -45,6 +46,7 @@ class LedgerReportResult:
     cash_flows_path: Path
     equity_path: Path
     positions_path: Path
+    rebalance_path: Path
     html_path: Path
 
 
@@ -520,6 +522,61 @@ def build_positions_export(results: list[LedgerRunResult]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def build_rebalance_export(
+    *,
+    trades: pd.DataFrame,
+    positions: pd.DataFrame,
+    target_weights: Any,
+) -> pd.DataFrame:
+    if trades.empty or positions.empty:
+        return pd.DataFrame()
+    if "strategy" not in trades.columns or "strategy" not in positions.columns:
+        return pd.DataFrame()
+
+    rebalance_trades = trades[trades["strategy"] == "ledger_rebalance"].copy()
+    rebalance_positions = positions[positions["strategy"] == "ledger_rebalance"].copy()
+    if "note" in rebalance_trades.columns:
+        rebalance_trades = rebalance_trades[
+            rebalance_trades["note"].astype(str).str.contains("rebalance", case=False)
+        ]
+    if rebalance_trades.empty or rebalance_positions.empty:
+        return pd.DataFrame()
+
+    clean_targets = _clean_target_weights(target_weights)
+    rebalance_trades["date"] = pd.to_datetime(rebalance_trades["date"])
+    rebalance_positions["date"] = pd.to_datetime(rebalance_positions["date"])
+    rows: list[dict[str, Any]] = []
+    group_columns = ["ticker", "dividend_mode", "date"]
+    for (ticker, mode, event_date), group in rebalance_trades.groupby(group_columns, sort=True):
+        position_group = rebalance_positions[
+            (rebalance_positions["ticker"] == ticker)
+            & (rebalance_positions["dividend_mode"] == mode)
+            & (rebalance_positions["date"] == event_date)
+        ].sort_values("asset")
+        post_weights = _format_rebalance_weights(position_group, clean_targets)
+        drift_values = _post_rebalance_drift_values(position_group, clean_targets)
+        sides = group["side"].astype(str).str.lower()
+        rows.append(
+            {
+                "date": pd.Timestamp(event_date).date().isoformat(),
+                "ticker": ticker,
+                "strategy": "ledger_rebalance",
+                "dividend_mode": mode,
+                "trade_count": int(len(group)),
+                "buy_count": int(sides.str.contains("buy").sum()),
+                "sell_count": int(sides.str.contains("sell").sum()),
+                "traded_value": float(group.get("gross_amount", pd.Series(dtype=float)).sum()),
+                "fees": float(group.get("fees", pd.Series(dtype=float)).sum()),
+                "post_rebalance_max_abs_drift": (
+                    float(max(drift_values)) if drift_values else np.nan
+                ),
+                "post_rebalance_weights": post_weights,
+                "trade_reasons": _format_trade_reasons(group),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _combined_close_prices(price_frames: list[PriceFrame]) -> pd.DataFrame:
     close_series = [frame.close().dropna().sort_index() for frame in price_frames]
     prices = pd.concat(close_series, axis=1, join="inner").sort_index()
@@ -580,6 +637,14 @@ def write_ledger_report(
     cash_flows = _combine_event_frames(results, "cash_flows")
     equity = build_equity_export(results, base_currency=base_currency, usd_twd=usd_twd)
     positions = build_positions_export(results)
+    target_weights = (
+        report_context.get("target_weights", {}) if report_context is not None else {}
+    )
+    rebalance = build_rebalance_export(
+        trades=trades,
+        positions=positions,
+        target_weights=target_weights,
+    )
 
     markdown_path = output_dir / f"ledger_{slug}.md"
     metrics_path = output_dir / f"ledger_{slug}_metrics.csv"
@@ -588,6 +653,7 @@ def write_ledger_report(
     cash_flows_path = output_dir / f"ledger_{slug}_cash_flows.csv"
     equity_path = output_dir / f"ledger_{slug}_equity.csv"
     positions_path = output_dir / f"ledger_{slug}_positions.csv"
+    rebalance_path = output_dir / f"ledger_{slug}_rebalance.csv"
     html_path = output_dir / f"ledger_{slug}.html"
 
     metrics.to_csv(metrics_path, index=False, encoding="utf-8")
@@ -596,10 +662,12 @@ def write_ledger_report(
     cash_flows.to_csv(cash_flows_path, index=False, encoding="utf-8")
     equity.to_csv(equity_path, index=False, encoding="utf-8")
     positions.to_csv(positions_path, index=False, encoding="utf-8")
+    rebalance.to_csv(rebalance_path, index=False, encoding="utf-8")
     markdown_path.write_text(
         render_ledger_markdown(
             config_path=config_path,
             metrics=metrics,
+            rebalance=rebalance,
             warnings=warnings,
             metrics_path=metrics_path,
             trades_path=trades_path,
@@ -607,6 +675,7 @@ def write_ledger_report(
             cash_flows_path=cash_flows_path,
             equity_path=equity_path,
             positions_path=positions_path,
+            rebalance_path=rebalance_path,
             html_path=html_path,
         ),
         encoding="utf-8",
@@ -618,6 +687,7 @@ def write_ledger_report(
         trades=trades,
         dividends=dividends,
         cash_flows=cash_flows,
+        rebalance=rebalance,
         warnings=warnings,
         output_path=html_path,
         config_path=config_path,
@@ -627,6 +697,7 @@ def write_ledger_report(
         cash_flows_path=cash_flows_path,
         equity_path=equity_path,
         positions_path=positions_path,
+        rebalance_path=rebalance_path,
         report_context=report_context,
     )
 
@@ -637,6 +708,7 @@ def write_ledger_report(
         cash_flows=cash_flows,
         equity=equity,
         positions=positions,
+        rebalance=rebalance,
         warnings=warnings,
         markdown_path=markdown_path,
         metrics_path=metrics_path,
@@ -645,6 +717,7 @@ def write_ledger_report(
         cash_flows_path=cash_flows_path,
         equity_path=equity_path,
         positions_path=positions_path,
+        rebalance_path=rebalance_path,
         html_path=html_path,
     )
 
@@ -653,6 +726,7 @@ def render_ledger_markdown(
     *,
     config_path: Path,
     metrics: pd.DataFrame,
+    rebalance: pd.DataFrame,
     warnings: list[str],
     metrics_path: Path,
     trades_path: Path,
@@ -660,11 +734,17 @@ def render_ledger_markdown(
     cash_flows_path: Path,
     equity_path: Path,
     positions_path: Path,
+    rebalance_path: Path,
     html_path: Path,
 ) -> str:
     metrics_md = _format_metrics_for_markdown(metrics).to_markdown(
         index=False,
         disable_numparse=True,
+    )
+    rebalance_md = (
+        rebalance.tail(12).to_markdown(index=False, disable_numparse=True)
+        if not rebalance.empty
+        else "目前沒有再平衡摘要。"
     )
     warning_lines = "\n".join(f"- {warning}" for warning in warnings) if warnings else "- 無"
     return f"""# 美股 Ledger 報表
@@ -678,6 +758,7 @@ def render_ledger_markdown(
 - 外部現金流 CSV：`{cash_flows_path}`
 - 權益曲線 CSV：`{equity_path}`
 - 部位權重 CSV：`{positions_path}`
+- 再平衡摘要 CSV：`{rebalance_path}`
 - 圖表 HTML：`{html_path}`
 
 ## 怎麼讀
@@ -692,6 +773,10 @@ def render_ledger_markdown(
 ## 指標摘要
 
 {metrics_md}
+
+## 再平衡摘要
+
+{rebalance_md}
 
 ## 警告與限制
 
@@ -710,6 +795,7 @@ def write_ledger_html(
     trades: pd.DataFrame,
     dividends: pd.DataFrame,
     cash_flows: pd.DataFrame,
+    rebalance: pd.DataFrame,
     warnings: list[str],
     output_path: Path,
     config_path: Path,
@@ -719,6 +805,7 @@ def write_ledger_html(
     cash_flows_path: Path,
     equity_path: Path,
     positions_path: Path,
+    rebalance_path: Path,
     report_context: dict[str, Any] | None = None,
 ) -> Path:
     preferred_metrics = _preferred_basis_metrics(metrics)
@@ -731,6 +818,7 @@ def write_ledger_html(
         trades=trades,
         dividends=dividends,
         cash_flows=cash_flows,
+        rebalance=rebalance,
         warnings=warnings,
         output_path=output_path,
         config_path=config_path,
@@ -740,6 +828,7 @@ def write_ledger_html(
         cash_flows_path=cash_flows_path,
         equity_path=equity_path,
         positions_path=positions_path,
+        rebalance_path=rebalance_path,
         report_context=context,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -756,6 +845,7 @@ def _render_ledger_dashboard_html(
     trades: pd.DataFrame,
     dividends: pd.DataFrame,
     cash_flows: pd.DataFrame,
+    rebalance: pd.DataFrame,
     warnings: list[str],
     output_path: Path,
     config_path: Path,
@@ -765,12 +855,19 @@ def _render_ledger_dashboard_html(
     cash_flows_path: Path,
     equity_path: Path,
     positions_path: Path,
+    rebalance_path: Path,
     report_context: dict[str, Any],
 ) -> str:
     settings_html = _render_settings_overview(metrics, report_context, config_path)
     kpi_html = _render_kpi_cards(preferred_metrics)
     scenario_table = _render_metrics_html_table(preferred_metrics)
-    chart_sections = _render_dashboard_charts(equity, positions, preferred_metrics)
+    rebalance_html = _render_rebalance_section(rebalance)
+    chart_sections = _render_dashboard_charts(
+        equity,
+        positions,
+        preferred_metrics,
+        report_context.get("target_weights", {}),
+    )
     audit_html = _render_audit_section(
         output_path=output_path,
         metrics_path=metrics_path,
@@ -779,10 +876,12 @@ def _render_ledger_dashboard_html(
         cash_flows_path=cash_flows_path,
         equity_path=equity_path,
         positions_path=positions_path,
+        rebalance_path=rebalance_path,
         trades=trades,
         dividends=dividends,
         cash_flows=cash_flows,
         positions=positions,
+        rebalance=rebalance,
     )
     warning_html = _render_warning_section(warnings)
     style = _ledger_dashboard_css()
@@ -854,6 +953,8 @@ def _render_ledger_dashboard_html(
       {scenario_table}
     </section>
 
+    {rebalance_html}
+
     <section class="section-block" aria-labelledby="chart-title">
       <div class="section-heading">
         <div>
@@ -885,6 +986,7 @@ def _render_dashboard_charts(
     equity: pd.DataFrame,
     positions: pd.DataFrame,
     metrics: pd.DataFrame,
+    target_weights: Any,
 ) -> str:
     import plotly.graph_objects as go
 
@@ -942,7 +1044,7 @@ def _render_dashboard_charts(
             "weight-drift-chart",
             "權重漂移",
             "再平衡情境可用來檢查 SPY/QQQ 權重是否按月拉回目標。",
-            _build_weight_drift_figure(go, positions),
+            _build_weight_drift_figure(go, positions, target_weights),
         ),
     ]
 
@@ -1143,7 +1245,11 @@ def _build_cash_market_figure(
     return _style_plotly_figure(figure, yaxis_title="USD")
 
 
-def _build_weight_drift_figure(go: Any, positions: pd.DataFrame) -> Any:
+def _build_weight_drift_figure(
+    go: Any,
+    positions: pd.DataFrame,
+    target_weights: Any,
+) -> Any:
     figure = go.Figure()
     if positions.empty or "weight" not in positions.columns:
         _add_empty_annotation(figure, "沒有可繪製的部位權重資料")
@@ -1172,6 +1278,25 @@ def _build_weight_drift_figure(go: Any, positions: pd.DataFrame) -> Any:
                 ),
             )
         )
+    clean_targets = _clean_target_weights(target_weights)
+    if clean_targets:
+        min_date = pd.to_datetime(portfolio_positions["date"]).min()
+        max_date = pd.to_datetime(portfolio_positions["date"]).max()
+        for asset, target_weight in sorted(clean_targets.items()):
+            figure.add_trace(
+                go.Scatter(
+                    x=[min_date, max_date],
+                    y=[target_weight, target_weight],
+                    mode="lines",
+                    name=f"{asset} target",
+                    line={"dash": "dash", "width": 1.2, "color": "#8a948d"},
+                    hovertemplate=(
+                        f"{asset} target<br>%{{x|%Y-%m-%d}}"
+                        f"<br>target: {target_weight:.2%}<extra></extra>"
+                    ),
+                    showlegend=True,
+                )
+            )
     figure = _style_plotly_figure(figure, yaxis_title="Weight")
     figure.update_yaxes(tickformat=".0%")
     return figure
@@ -1374,6 +1499,46 @@ def _render_metrics_html_table(metrics: pd.DataFrame) -> str:
     return _html_table(display, columns, css_class="wide-table")
 
 
+def _render_rebalance_section(rebalance: pd.DataFrame) -> str:
+    if rebalance.empty:
+        return ""
+    recent = rebalance.tail(10).copy()
+    for column in ["traded_value", "fees"]:
+        if column in recent.columns:
+            recent[column] = recent[column].map(_format_money_or_blank)
+    if "post_rebalance_max_abs_drift" in recent.columns:
+        recent["post_rebalance_max_abs_drift"] = recent[
+            "post_rebalance_max_abs_drift"
+        ].map(_format_percent_or_blank)
+    table = _html_table(
+        recent,
+        [
+            ("date", "日期"),
+            ("ticker", "組合"),
+            ("dividend_mode", "股息模式"),
+            ("trade_count", "交易數"),
+            ("buy_count", "買入"),
+            ("sell_count", "賣出"),
+            ("traded_value", "交易金額"),
+            ("fees", "費用"),
+            ("post_rebalance_max_abs_drift", "調整後最大偏離"),
+            ("post_rebalance_weights", "調整後權重"),
+            ("trade_reasons", "買賣原因"),
+        ],
+        css_class="compact-table",
+    )
+    return f"""<section class="section-block" aria-labelledby="rebalance-title">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Rebalance Audit</p>
+      <h2 id="rebalance-title">再平衡讀法</h2>
+    </div>
+    <p>這裡把每次再平衡的買賣原因攤開：交易數、買賣方向、調整後權重，以及離目標權重還差多少。</p>
+  </div>
+  {table}
+</section>"""
+
+
 def _render_audit_section(
     *,
     output_path: Path,
@@ -1383,10 +1548,12 @@ def _render_audit_section(
     cash_flows_path: Path,
     equity_path: Path,
     positions_path: Path,
+    rebalance_path: Path,
     trades: pd.DataFrame,
     dividends: pd.DataFrame,
     cash_flows: pd.DataFrame,
     positions: pd.DataFrame,
+    rebalance: pd.DataFrame,
 ) -> str:
     links = [
         ("指標 CSV", metrics_path),
@@ -1395,6 +1562,7 @@ def _render_audit_section(
         ("外部現金流 CSV", cash_flows_path),
         ("權益曲線 CSV", equity_path),
         ("部位權重 CSV", positions_path),
+        ("再平衡摘要 CSV", rebalance_path),
     ]
     link_parts = []
     for label, path in links:
@@ -1457,6 +1625,22 @@ def _render_audit_section(
             ("weight", "權重"),
         ],
     )
+    rebalance_table = _render_event_table(
+        rebalance,
+        [
+            ("date", "日期"),
+            ("ticker", "組合"),
+            ("dividend_mode", "股息模式"),
+            ("trade_count", "交易數"),
+            ("buy_count", "買入"),
+            ("sell_count", "賣出"),
+            ("traded_value", "交易金額"),
+            ("fees", "費用"),
+            ("post_rebalance_max_abs_drift", "最大偏離"),
+            ("post_rebalance_weights", "調整後權重"),
+            ("trade_reasons", "買賣原因"),
+        ],
+    )
     return f"""<section class="section-block" aria-labelledby="audit-title">
   <div class="section-heading">
     <div>
@@ -1467,6 +1651,7 @@ def _render_audit_section(
   </div>
   <div class="download-row" aria-label="CSV 下載">{link_html}</div>
   <div class="audit-grid">
+    <article class="audit-card"><h3>再平衡摘要</h3>{rebalance_table}</article>
     <article class="audit-card"><h3>最近交易</h3>{trades_table}</article>
     <article class="audit-card"><h3>最近股息</h3>{dividend_table}</article>
     <article class="audit-card"><h3>最近現金流</h3>{cash_flow_table}</article>
@@ -1653,6 +1838,95 @@ def _format_target_weights(value: Any) -> str:
     if not isinstance(value, dict) or not value:
         return "未提供"
     return "、".join(f"{ticker} {float(weight):.0%}" for ticker, weight in value.items())
+
+
+def _clean_target_weights(value: Any) -> dict[str, float]:
+    if not isinstance(value, dict):
+        return {}
+    clean: dict[str, float] = {}
+    for ticker, weight in value.items():
+        try:
+            clean[str(ticker)] = float(weight)
+        except (TypeError, ValueError):
+            continue
+    return clean
+
+
+def _format_rebalance_weights(
+    positions: pd.DataFrame,
+    target_weights: dict[str, float],
+) -> str:
+    if positions.empty:
+        return ""
+    parts: list[str] = []
+    for row in positions.itertuples():
+        asset = str(row.asset)
+        weight = float(row.weight)
+        if asset in target_weights:
+            drift = weight - target_weights[asset]
+            parts.append(
+                f"{asset}={weight:.2%} target={target_weights[asset]:.0%} drift={drift:+.2%}"
+            )
+        else:
+            parts.append(f"{asset}={weight:.2%}")
+    return "; ".join(parts)
+
+
+def _post_rebalance_drift_values(
+    positions: pd.DataFrame,
+    target_weights: dict[str, float],
+) -> list[float]:
+    drift_values: list[float] = []
+    if positions.empty:
+        return drift_values
+    for row in positions.itertuples():
+        asset = str(row.asset)
+        if asset in target_weights:
+            drift_values.append(abs(float(row.weight) - target_weights[asset]))
+    return drift_values
+
+
+def _format_trade_reasons(trades: pd.DataFrame) -> str:
+    reasons: list[str] = []
+    for row in trades.sort_values(["side", "asset"]).itertuples():
+        note = str(getattr(row, "note", ""))
+        current = _format_note_percent(note, "current_weight")
+        target = _format_note_percent(note, "target_weight")
+        drift = _format_note_percent(note, "drift", signed=True)
+        action = _note_value(note, "action")
+        side = str(getattr(row, "side", "")).lower()
+        asset = str(getattr(row, "asset", ""))
+        pieces = [f"{side.upper()} {asset}"]
+        if action:
+            pieces.append(action)
+        if current and target:
+            pieces.append(f"{current}->{target}")
+        if drift:
+            pieces.append(f"drift {drift}")
+        details = "; ".join(pieces[1:])
+        reasons.append(f"{pieces[0]}: {details}" if details else pieces[0])
+    return " | ".join(reasons)
+
+
+def _note_value(note: str, key: str) -> str:
+    prefix = f"{key}="
+    for part in note.split(";"):
+        part = part.strip()
+        if part.startswith(prefix):
+            return part[len(prefix) :]
+    return ""
+
+
+def _format_note_percent(note: str, key: str, *, signed: bool = False) -> str:
+    value = _note_value(note, key)
+    if not value:
+        return ""
+    try:
+        number = float(value)
+    except ValueError:
+        return value
+    sign = "+" if signed and number >= 0 else ""
+    return f"{sign}{number:.2%}"
 
 
 def _relative_report_path(path: Path, output_path: Path) -> str:
@@ -2209,6 +2483,7 @@ __all__ = [
     "align_dividends_to_trading_dates",
     "build_equity_export",
     "build_positions_export",
+    "build_rebalance_export",
     "dca_contribution_dates",
     "ledger_metrics_records",
     "rebalance_schedule_dates",

@@ -136,6 +136,7 @@ uv sync --extra dev
 - `reports/ledger_spy_qqq_cash_flows.csv`
 - `reports/ledger_spy_qqq_equity.csv`
 - `reports/ledger_spy_qqq_positions.csv`
+- `reports/ledger_spy_qqq_rebalance.csv`
 - `reports/ledger_spy_qqq.html`
 
 驗證重點：
@@ -147,7 +148,8 @@ uv sync --extra dev
 - dividends CSV 要能看到 gross dividend、withholding tax、net amount。
 - cash flows CSV 要能看到 DCA 每月投入。
 - positions CSV 要能看到 SPY/QQQ 的 quantity、market value、weight。
-- HTML 要能打開並看到中文 dashboard shell、設定總覽、KPI、情境表、TWD/USD equity curve、drawdown、cash/market value、股息/稅/費用圖、權重漂移圖與 CSV 下載連結。
+- rebalance CSV 要能看到每次再平衡的交易數、買賣方向、調整後最大偏離與買賣原因。
+- HTML 要能打開並看到中文 dashboard shell、設定總覽、KPI、情境表、再平衡讀法、TWD/USD equity curve、drawdown、cash/market value、股息/稅/費用圖、權重漂移圖與 CSV 下載連結。
 
 ## 8. 排錯順序
 

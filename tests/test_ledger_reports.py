@@ -336,6 +336,7 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
         output_dir=tmp_path,
         slug="spy",
         config_path=Path("configs/mvp_example.yaml"),
+        report_context={"target_weights": {"SPY": 0.6, "QQQ": 0.4}},
     )
 
     assert report.markdown_path.exists()
@@ -345,6 +346,7 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert report.cash_flows_path.exists()
     assert report.equity_path.exists()
     assert report.positions_path.exists()
+    assert report.rebalance_path.exists()
     assert report.html_path.exists()
     assert set(report.metrics["basis"]) == {"USD", "TWD"}
     assert "ledger_dca" in set(report.metrics["strategy"])
@@ -357,9 +359,14 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert not report.cash_flows.empty
     assert not report.positions.empty
     assert "ledger_rebalance" in set(report.positions["strategy"])
+    assert not report.rebalance.empty
+    assert report.rebalance["trade_count"].max() >= 1
+    assert "trade_reasons" in report.rebalance.columns
+    assert "increase underweight" in " ".join(report.rebalance["trade_reasons"])
     assert "美股 Ledger 報表" in report.markdown_path.read_text(encoding="utf-8")
     assert "外部現金流 CSV" in report.markdown_path.read_text(encoding="utf-8")
     assert "部位權重 CSV" in report.markdown_path.read_text(encoding="utf-8")
+    assert "再平衡摘要 CSV" in report.markdown_path.read_text(encoding="utf-8")
     html = report.html_path.read_text(encoding="utf-8")
     assert "US Ledger Audit Report" in html
     assert "https://fonts.googleapis.com" in html
@@ -376,4 +383,7 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert "reinvest" in html
     assert "deposit" in html
     assert "權重漂移" in html
+    assert "再平衡讀法" in html
+    assert "再平衡摘要 CSV" in html
+    assert "買賣原因" in html
     assert "部位權重 CSV" in html
