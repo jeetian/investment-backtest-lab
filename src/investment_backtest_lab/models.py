@@ -85,14 +85,14 @@ class RebalanceConfig:
 
 @dataclass(frozen=True)
 class DCAConfig:
-    contribution: float = 10_000.0
+    contribution: float = 1_000.0
     frequency: str = "MS"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> DCAConfig:
         data = data or {}
         return cls(
-            contribution=float(data.get("contribution", 10_000.0)),
+            contribution=float(data.get("contribution", 1_000.0)),
             frequency=str(data.get("frequency", "MS")),
         )
 
@@ -133,7 +133,7 @@ class DividendConfig:
 class LedgerConfig:
     base_currency: str = "TWD"
     account_currency: str = "USD"
-    initial_cash: float = 100_000.0
+    initial_cash: float = 10_000.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> LedgerConfig:
@@ -141,7 +141,7 @@ class LedgerConfig:
         return cls(
             base_currency=str(data.get("base_currency", "TWD")).upper(),
             account_currency=str(data.get("account_currency", "USD")).upper(),
-            initial_cash=float(data.get("initial_cash", 100_000.0)),
+            initial_cash=float(data.get("initial_cash", 10_000.0)),
         )
 
 

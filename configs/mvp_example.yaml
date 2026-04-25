@@ -34,18 +34,16 @@ strategy:
   params:
     fast_window: 50
     slow_window: 200
-    init_cash: 100000
+    init_cash: 10000
 
 rebalance:
   frequency: monthly
   target_weights:
-    SPY: 0.35
-    QQQ: 0.25
-    "0050": 0.25
-    "2330": 0.15
+    SPY: 0.60
+    QQQ: 0.40
 
 dca:
-  contribution: 10000
+  contribution: 1000
   frequency: MS
 
 dividend:
@@ -58,7 +56,7 @@ tax:
 ledger:
   base_currency: TWD
   account_currency: USD
-  initial_cash: 100000
+  initial_cash: 10000
 
 cost_model:
   tw:

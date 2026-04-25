@@ -12,6 +12,7 @@ from investment_backtest_lab.costs import CostModel
 from investment_backtest_lab.data.fx import align_fx_rate
 from investment_backtest_lab.ledger import AccountLedger
 from investment_backtest_lab.models import DividendFrame, DividendMode, PriceFrame
+from investment_backtest_lab.portfolio_ledger import PortfolioLedger
 from investment_backtest_lab.reports import max_drawdown, performance_summary
 
 
@@ -20,7 +21,7 @@ class LedgerRunResult:
     ticker: str
     strategy: str
     dividend_mode: DividendMode
-    ledger: AccountLedger
+    ledger: AccountLedger | PortfolioLedger
     equity_curve: pd.DataFrame
     aligned_dividends: pd.DataFrame
     price_source: str
@@ -35,6 +36,7 @@ class LedgerReportResult:
     dividends: pd.DataFrame
     cash_flows: pd.DataFrame
     equity: pd.DataFrame
+    positions: pd.DataFrame
     warnings: list[str]
     markdown_path: Path
     metrics_path: Path
@@ -42,6 +44,7 @@ class LedgerReportResult:
     dividends_path: Path
     cash_flows_path: Path
     equity_path: Path
+    positions_path: Path
     html_path: Path
 
 
@@ -226,6 +229,135 @@ def run_dca_ledger(
     )
 
 
+def run_rebalance_ledger(
+    *,
+    price_frames: list[PriceFrame],
+    dividend_frames: list[DividendFrame],
+    cost_model: CostModel,
+    initial_cash: float,
+    target_weights: dict[str, float],
+    frequency: str,
+    dividend_mode: DividendMode | str,
+    withholding_rate: float,
+) -> LedgerRunResult:
+    dividend_mode = DividendMode(dividend_mode)
+    if not price_frames:
+        raise ValueError("Ledger rebalance requires at least one price frame.")
+
+    assets = [price_frame.asset for price_frame in price_frames]
+    tickers = [asset.ticker for asset in assets]
+    if len(set(tickers)) != len(tickers):
+        raise ValueError("Ledger rebalance requires unique tickers.")
+    if set(target_weights) != set(tickers):
+        raise ValueError(
+            "Ledger rebalance v1 requires target weights for exactly the selected tickers."
+        )
+
+    warnings: list[str] = []
+    for price_frame in price_frames:
+        if price_frame.adjusted:
+            warnings.append(
+                f"{price_frame.asset.ticker}: price data is adjusted; "
+                "ledger dividend report expects raw prices to avoid double counting."
+            )
+
+    prices = _combined_close_prices(price_frames)
+    if prices.empty:
+        raise ValueError("Ledger rebalance requires overlapping non-empty price data.")
+
+    ledger = PortfolioLedger(
+        assets=assets,
+        starting_cash=initial_cash,
+        cost_model=cost_model,
+        dividend_withholding_rate=withholding_rate,
+        account_currency="USD",
+    )
+    rebalance_dates = rebalance_schedule_dates(prices.index, frequency=frequency)
+
+    aligned_frames: list[pd.DataFrame] = []
+    dividends_by_date: dict[pd.Timestamp, list[tuple[str, pd.Series]]] = {}
+    dividends_by_ticker = {frame.asset.ticker: frame for frame in dividend_frames}
+    for ticker in tickers:
+        dividend_frame = dividends_by_ticker.get(ticker)
+        raw_dividends = (
+            dividend_frame.data.copy()
+            if dividend_frame is not None
+            else pd.DataFrame(columns=["dividend_per_share"])
+        )
+        aligned, align_warnings = align_dividends_to_trading_dates(raw_dividends, prices.index)
+        warnings.extend(f"{ticker}: {warning}" for warning in align_warnings)
+        if aligned.empty:
+            continue
+        aligned = aligned.copy()
+        aligned.insert(0, "asset", ticker)
+        aligned_frames.append(aligned)
+        effective = aligned.dropna(subset=["effective_date"]).copy()
+        if effective.empty:
+            continue
+        effective["effective_date"] = pd.to_datetime(effective["effective_date"])
+        for effective_date, group in effective.groupby("effective_date"):
+            date_key = pd.Timestamp(effective_date)
+            dividends_by_date.setdefault(date_key, [])
+            for _, row in group.iterrows():
+                dividends_by_date[date_key].append((ticker, row))
+
+    for current_date, price_row in prices.iterrows():
+        current_date = pd.Timestamp(current_date)
+        current_prices = {ticker: float(price_row[ticker]) for ticker in tickers}
+        for ticker, row in dividends_by_date.get(current_date, []):
+            reinvest = dividend_mode == DividendMode.REINVEST
+            ledger.cash_dividend(
+                ticker,
+                current_date,
+                dividend_per_share=float(row["dividend_per_share"]),
+                reinvest=reinvest,
+                price=current_prices[ticker] if reinvest else None,
+                note=f"source_date={pd.Timestamp(row['dividend_date']).date().isoformat()}",
+            )
+        if current_date in rebalance_dates:
+            ledger.rebalance_to_weights(
+                current_date,
+                prices=current_prices,
+                target_weights=target_weights,
+                note=f"{frequency} rebalance",
+            )
+        ledger.snapshot(current_date, prices=current_prices)
+
+    aligned_dividends = (
+        pd.concat(aligned_frames, ignore_index=True) if aligned_frames else pd.DataFrame()
+    )
+    late_dividends = (
+        aligned_dividends[aligned_dividends["effective_date"].isna()]
+        if not aligned_dividends.empty
+        else pd.DataFrame()
+    )
+    for _, row in late_dividends.iterrows():
+        ticker = str(row["asset"])
+        if ledger.positions.get(ticker, 0.0) <= 0:
+            continue
+        ledger.cash_dividend(
+            ticker,
+            row["dividend_date"],
+            dividend_per_share=float(row["dividend_per_share"]),
+            reinvest=False,
+            note="no later trading price; kept as cash",
+        )
+
+    return LedgerRunResult(
+        ticker="_".join(tickers),
+        strategy="ledger_rebalance",
+        dividend_mode=dividend_mode,
+        ledger=ledger,
+        equity_curve=ledger.equity_curve,
+        aligned_dividends=aligned_dividends,
+        price_source="; ".join(f"{frame.asset.ticker}:{frame.source}" for frame in price_frames),
+        dividend_source="; ".join(
+            f"{frame.asset.ticker}:{frame.source}" for frame in dividend_frames
+        ),
+        warnings=tuple(warnings),
+    )
+
+
 def dca_contribution_dates(trading_index: pd.Index, *, frequency: str) -> set[pd.Timestamp]:
     trading_dates = pd.DatetimeIndex(trading_index).sort_values()
     if trading_dates.empty:
@@ -238,6 +370,15 @@ def dca_contribution_dates(trading_index: pd.Index, *, frequency: str) -> set[pd
     positions = trading_dates.searchsorted(schedule, side="left")
     positions = positions[positions < len(trading_dates)]
     return {pd.Timestamp(date) for date in pd.Index(trading_dates[positions]).drop_duplicates()}
+
+
+def rebalance_schedule_dates(trading_index: pd.Index, *, frequency: str) -> set[pd.Timestamp]:
+    normalized = frequency.lower()
+    if normalized in {"monthly", "month", "m"}:
+        return dca_contribution_dates(trading_index, frequency="MS")
+    if normalized in {"quarterly", "quarter", "q"}:
+        return dca_contribution_dates(trading_index, frequency="QS")
+    return dca_contribution_dates(trading_index, frequency=frequency)
 
 
 def align_dividends_to_trading_dates(
@@ -366,6 +507,51 @@ def build_equity_export(
     return pd.concat(frames, ignore_index=True)
 
 
+def build_positions_export(results: list[LedgerRunResult]) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for result in results:
+        positions = _positions_frame_for_result(result)
+        if positions.empty:
+            continue
+        positions.insert(0, "ticker", result.ticker)
+        positions.insert(1, "strategy", result.strategy)
+        positions.insert(2, "dividend_mode", result.dividend_mode.value)
+        frames.append(positions)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def _combined_close_prices(price_frames: list[PriceFrame]) -> pd.DataFrame:
+    close_series = [frame.close().dropna().sort_index() for frame in price_frames]
+    prices = pd.concat(close_series, axis=1, join="inner").sort_index()
+    prices = prices.dropna(how="any")
+    prices.columns = [frame.asset.ticker for frame in price_frames]
+    return prices
+
+
+def _positions_frame_for_result(result: LedgerRunResult) -> pd.DataFrame:
+    positions_history = getattr(result.ledger, "positions_history", None)
+    if positions_history is not None:
+        frame = positions_history.copy()
+        if not frame.empty:
+            return frame
+
+    equity = result.equity_curve.copy()
+    if equity.empty:
+        return pd.DataFrame()
+    frame = pd.DataFrame(
+        {
+            "date": equity["date"],
+            "asset": result.ticker,
+            "quantity": equity["quantity"],
+            "price": equity["price"],
+            "market_value": equity["market_value"],
+            "weight": equity["exposure"],
+            "currency": equity["currency"],
+        }
+    )
+    return frame
+
+
 def write_ledger_report(
     *,
     results: list[LedgerRunResult],
@@ -393,6 +579,7 @@ def write_ledger_report(
     dividends = _combine_event_frames(results, "dividends")
     cash_flows = _combine_event_frames(results, "cash_flows")
     equity = build_equity_export(results, base_currency=base_currency, usd_twd=usd_twd)
+    positions = build_positions_export(results)
 
     markdown_path = output_dir / f"ledger_{slug}.md"
     metrics_path = output_dir / f"ledger_{slug}_metrics.csv"
@@ -400,6 +587,7 @@ def write_ledger_report(
     dividends_path = output_dir / f"ledger_{slug}_dividends.csv"
     cash_flows_path = output_dir / f"ledger_{slug}_cash_flows.csv"
     equity_path = output_dir / f"ledger_{slug}_equity.csv"
+    positions_path = output_dir / f"ledger_{slug}_positions.csv"
     html_path = output_dir / f"ledger_{slug}.html"
 
     metrics.to_csv(metrics_path, index=False, encoding="utf-8")
@@ -407,6 +595,7 @@ def write_ledger_report(
     dividends.to_csv(dividends_path, index=False, encoding="utf-8")
     cash_flows.to_csv(cash_flows_path, index=False, encoding="utf-8")
     equity.to_csv(equity_path, index=False, encoding="utf-8")
+    positions.to_csv(positions_path, index=False, encoding="utf-8")
     markdown_path.write_text(
         render_ledger_markdown(
             config_path=config_path,
@@ -417,12 +606,14 @@ def write_ledger_report(
             dividends_path=dividends_path,
             cash_flows_path=cash_flows_path,
             equity_path=equity_path,
+            positions_path=positions_path,
             html_path=html_path,
         ),
         encoding="utf-8",
     )
     write_ledger_html(
         equity=equity,
+        positions=positions,
         metrics=metrics,
         trades=trades,
         dividends=dividends,
@@ -435,6 +626,7 @@ def write_ledger_report(
         dividends_path=dividends_path,
         cash_flows_path=cash_flows_path,
         equity_path=equity_path,
+        positions_path=positions_path,
         report_context=report_context,
     )
 
@@ -444,6 +636,7 @@ def write_ledger_report(
         dividends=dividends,
         cash_flows=cash_flows,
         equity=equity,
+        positions=positions,
         warnings=warnings,
         markdown_path=markdown_path,
         metrics_path=metrics_path,
@@ -451,6 +644,7 @@ def write_ledger_report(
         dividends_path=dividends_path,
         cash_flows_path=cash_flows_path,
         equity_path=equity_path,
+        positions_path=positions_path,
         html_path=html_path,
     )
 
@@ -465,6 +659,7 @@ def render_ledger_markdown(
     dividends_path: Path,
     cash_flows_path: Path,
     equity_path: Path,
+    positions_path: Path,
     html_path: Path,
 ) -> str:
     metrics_md = _format_metrics_for_markdown(metrics).to_markdown(
@@ -482,6 +677,7 @@ def render_ledger_markdown(
 - 股息明細 CSV：`{dividends_path}`
 - 外部現金流 CSV：`{cash_flows_path}`
 - 權益曲線 CSV：`{equity_path}`
+- 部位權重 CSV：`{positions_path}`
 - 圖表 HTML：`{html_path}`
 
 ## 怎麼讀
@@ -490,6 +686,7 @@ def render_ledger_markdown(
 - `dividend_mode=cash`：股息扣除預扣稅後留在現金。
 - `dividend_mode=reinvest`：股息扣除預扣稅後，用對齊後交易日收盤價再投入。
 - `strategy=ledger_dca`：每期外部投入會記錄在 cash flows，不用 CAGR/Sharpe 當主要結論。
+- `strategy=ledger_rebalance`：多資產共用現金池，按目標權重定期買賣。
 - `basis=USD`：原幣結果；`basis=TWD`：用 USD/TWD 匯率換算後結果。
 
 ## 指標摘要
@@ -508,6 +705,7 @@ def render_ledger_markdown(
 def write_ledger_html(
     *,
     equity: pd.DataFrame,
+    positions: pd.DataFrame,
     metrics: pd.DataFrame,
     trades: pd.DataFrame,
     dividends: pd.DataFrame,
@@ -520,12 +718,14 @@ def write_ledger_html(
     dividends_path: Path,
     cash_flows_path: Path,
     equity_path: Path,
+    positions_path: Path,
     report_context: dict[str, Any] | None = None,
 ) -> Path:
     preferred_metrics = _preferred_basis_metrics(metrics)
     context = report_context or {}
     dashboard_html = _render_ledger_dashboard_html(
         equity=equity,
+        positions=positions,
         metrics=metrics,
         preferred_metrics=preferred_metrics,
         trades=trades,
@@ -539,6 +739,7 @@ def write_ledger_html(
         dividends_path=dividends_path,
         cash_flows_path=cash_flows_path,
         equity_path=equity_path,
+        positions_path=positions_path,
         report_context=context,
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -549,6 +750,7 @@ def write_ledger_html(
 def _render_ledger_dashboard_html(
     *,
     equity: pd.DataFrame,
+    positions: pd.DataFrame,
     metrics: pd.DataFrame,
     preferred_metrics: pd.DataFrame,
     trades: pd.DataFrame,
@@ -562,12 +764,13 @@ def _render_ledger_dashboard_html(
     dividends_path: Path,
     cash_flows_path: Path,
     equity_path: Path,
+    positions_path: Path,
     report_context: dict[str, Any],
 ) -> str:
     settings_html = _render_settings_overview(metrics, report_context, config_path)
     kpi_html = _render_kpi_cards(preferred_metrics)
     scenario_table = _render_metrics_html_table(preferred_metrics)
-    chart_sections = _render_dashboard_charts(equity, preferred_metrics)
+    chart_sections = _render_dashboard_charts(equity, positions, preferred_metrics)
     audit_html = _render_audit_section(
         output_path=output_path,
         metrics_path=metrics_path,
@@ -575,9 +778,11 @@ def _render_ledger_dashboard_html(
         dividends_path=dividends_path,
         cash_flows_path=cash_flows_path,
         equity_path=equity_path,
+        positions_path=positions_path,
         trades=trades,
         dividends=dividends,
         cash_flows=cash_flows,
+        positions=positions,
     )
     warning_html = _render_warning_section(warnings)
     style = _ledger_dashboard_css()
@@ -660,6 +865,7 @@ def _render_ledger_dashboard_html(
       <div class="legend-guide">
         <span><b>B&amp;H</b> = ledger_buy_and_hold</span>
         <span><b>DCA</b> = ledger_dca</span>
+        <span><b>Rebal</b> = ledger_rebalance</span>
         <span><b>現金</b> = cash</span>
         <span><b>再投</b> = reinvest</span>
       </div>
@@ -675,7 +881,11 @@ def _render_ledger_dashboard_html(
 """
 
 
-def _render_dashboard_charts(equity: pd.DataFrame, metrics: pd.DataFrame) -> str:
+def _render_dashboard_charts(
+    equity: pd.DataFrame,
+    positions: pd.DataFrame,
+    metrics: pd.DataFrame,
+) -> str:
     import plotly.graph_objects as go
 
     color_map = _scenario_color_map(equity)
@@ -727,6 +937,12 @@ def _render_dashboard_charts(equity: pd.DataFrame, metrics: pd.DataFrame) -> str
             "現金與市值",
             "實線是持股市值，虛線是現金；可檢查股息留存與再投入差異。",
             _build_cash_market_figure(go, equity, color_map),
+        ),
+        (
+            "weight-drift-chart",
+            "權重漂移",
+            "再平衡情境可用來檢查 SPY/QQQ 權重是否按月拉回目標。",
+            _build_weight_drift_figure(go, positions),
         ),
     ]
 
@@ -927,6 +1143,40 @@ def _build_cash_market_figure(
     return _style_plotly_figure(figure, yaxis_title="USD")
 
 
+def _build_weight_drift_figure(go: Any, positions: pd.DataFrame) -> Any:
+    figure = go.Figure()
+    if positions.empty or "weight" not in positions.columns:
+        _add_empty_annotation(figure, "沒有可繪製的部位權重資料")
+        return _style_plotly_figure(figure, yaxis_title="Weight")
+
+    portfolio_positions = positions[positions["strategy"] == "ledger_rebalance"].copy()
+    if portfolio_positions.empty:
+        _add_empty_annotation(figure, "目前沒有 ledger_rebalance 權重資料")
+        return _style_plotly_figure(figure, yaxis_title="Weight")
+
+    for (ticker, mode, asset), group in portfolio_positions.groupby(
+        ["ticker", "dividend_mode", "asset"],
+        sort=True,
+    ):
+        dates = pd.to_datetime(group["date"])
+        trace_name = f"{ticker} {_mode_short(str(mode))} {asset}"
+        figure.add_trace(
+            go.Scatter(
+                x=dates,
+                y=group["weight"],
+                mode="lines",
+                name=trace_name,
+                hovertemplate=(
+                    f"{ticker} · ledger_rebalance · {asset} · {_mode_label(str(mode))}"
+                    "<br>%{x|%Y-%m-%d}<br>權重: %{y:.2%}<extra></extra>"
+                ),
+            )
+        )
+    figure = _style_plotly_figure(figure, yaxis_title="Weight")
+    figure.update_yaxes(tickformat=".0%")
+    return figure
+
+
 def _style_plotly_figure(figure: Any, *, yaxis_title: str) -> Any:
     figure.update_layout(
         template="plotly_white",
@@ -1003,6 +1253,13 @@ def _render_settings_overview(
             (
                 f"{_money_with_currency(report_context.get('dca_contribution'), 'USD')} / "
                 f"{report_context.get('dca_frequency', '未提供')}"
+            ),
+        ),
+        (
+            "再平衡",
+            (
+                f"{report_context.get('rebalance_frequency', '未提供')} · "
+                f"{_format_target_weights(report_context.get('target_weights'))}"
             ),
         ),
         (
@@ -1111,6 +1368,7 @@ def _render_metrics_html_table(metrics: pd.DataFrame) -> str:
         ("withholding_tax", "預扣稅"),
         ("fees_paid", "費用"),
         ("final_shares", "最後持股"),
+        ("final_weights", "最後權重"),
         ("cash", "現金"),
     ]
     return _html_table(display, columns, css_class="wide-table")
@@ -1124,9 +1382,11 @@ def _render_audit_section(
     dividends_path: Path,
     cash_flows_path: Path,
     equity_path: Path,
+    positions_path: Path,
     trades: pd.DataFrame,
     dividends: pd.DataFrame,
     cash_flows: pd.DataFrame,
+    positions: pd.DataFrame,
 ) -> str:
     links = [
         ("指標 CSV", metrics_path),
@@ -1134,6 +1394,7 @@ def _render_audit_section(
         ("股息明細 CSV", dividends_path),
         ("外部現金流 CSV", cash_flows_path),
         ("權益曲線 CSV", equity_path),
+        ("部位權重 CSV", positions_path),
     ]
     link_parts = []
     for label, path in links:
@@ -1182,6 +1443,20 @@ def _render_audit_section(
             ("note", "備註"),
         ],
     )
+    position_table = _render_event_table(
+        positions,
+        [
+            ("date", "日期"),
+            ("ticker", "情境"),
+            ("strategy", "策略"),
+            ("dividend_mode", "股息模式"),
+            ("asset", "資產"),
+            ("quantity", "股數"),
+            ("price", "價格"),
+            ("market_value", "市值"),
+            ("weight", "權重"),
+        ],
+    )
     return f"""<section class="section-block" aria-labelledby="audit-title">
   <div class="section-heading">
     <div>
@@ -1195,6 +1470,7 @@ def _render_audit_section(
     <article class="audit-card"><h3>最近交易</h3>{trades_table}</article>
     <article class="audit-card"><h3>最近股息</h3>{dividend_table}</article>
     <article class="audit-card"><h3>最近現金流</h3>{cash_flow_table}</article>
+    <article class="audit-card"><h3>最近部位權重</h3>{position_table}</article>
   </div>
 </section>"""
 
@@ -1322,13 +1598,18 @@ def _scenario_full(ticker: str, strategy: str, mode: str) -> str:
 
 
 def _strategy_short(strategy: str) -> str:
-    return {"ledger_buy_and_hold": "B&H", "ledger_dca": "DCA"}.get(strategy, strategy)
+    return {
+        "ledger_buy_and_hold": "B&H",
+        "ledger_dca": "DCA",
+        "ledger_rebalance": "Rebal",
+    }.get(strategy, strategy)
 
 
 def _strategy_label(strategy: str) -> str:
     return {
         "ledger_buy_and_hold": "Buy and Hold",
         "ledger_dca": "定期定額",
+        "ledger_rebalance": "定期再平衡",
     }.get(strategy, strategy)
 
 
@@ -1366,6 +1647,12 @@ def _money_with_currency(value: Any, currency: str) -> str:
     if value is None or pd.isna(value):
         return "未提供"
     return f"{float(value):,.2f} {currency}"
+
+
+def _format_target_weights(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return "未提供"
+    return "、".join(f"{ticker} {float(weight):.0%}" for ticker, weight in value.items())
 
 
 def _relative_report_path(path: Path, output_path: Path) -> str:
@@ -1779,7 +2066,8 @@ def _metric_record(
         "gross_dividends": gross_dividends,
         "withholding_tax": withholding_tax,
         "fees_paid": fees,
-        "final_shares": result.ledger.quantity,
+        "final_shares": _final_shares(result),
+        "final_weights": _final_weights(result),
         "cash": result.ledger.cash * (float(fx_rate.iloc[-1]) if fx_rate is not None else 1.0),
         "price_source": result.price_source,
         "dividend_source": result.dividend_source,
@@ -1815,6 +2103,8 @@ def _format_metrics_for_markdown(metrics: pd.DataFrame) -> pd.DataFrame:
         formatted[column] = formatted[column].map(_format_money_or_blank)
     formatted["sharpe"] = formatted["sharpe"].map(_format_number_or_blank)
     formatted["final_shares"] = formatted["final_shares"].map(_format_shares_or_blank)
+    if "final_weights" not in formatted.columns:
+        formatted["final_weights"] = ""
     return formatted[
         [
             "ticker",
@@ -1832,6 +2122,7 @@ def _format_metrics_for_markdown(metrics: pd.DataFrame) -> pd.DataFrame:
             "withholding_tax",
             "fees_paid",
             "final_shares",
+            "final_weights",
             "cash",
         ]
     ]
@@ -1860,6 +2151,27 @@ def _total_contributed(
     if fx_rate is None:
         raise ValueError("FX rate is required for non-USD initial capital conversion.")
     return float(result.ledger.starting_cash * float(fx_rate.iloc[0]))
+
+
+def _final_shares(result: LedgerRunResult) -> float:
+    quantity = getattr(result.ledger, "quantity", np.nan)
+    return float(quantity) if not pd.isna(quantity) else np.nan
+
+
+def _final_weights(result: LedgerRunResult) -> str:
+    positions = _positions_frame_for_result(result)
+    if positions.empty or "weight" not in positions.columns:
+        return ""
+    positions = positions.copy()
+    positions["date"] = pd.to_datetime(positions["date"])
+    final_date = positions["date"].max()
+    final_positions = positions[positions["date"] == final_date].sort_values("asset")
+    weights = [
+        f"{row.asset}={float(row.weight):.2%}"
+        for row in final_positions.itertuples()
+        if float(row.weight) > 1e-8
+    ]
+    return ", ".join(weights)
 
 
 def _format_percent_or_blank(value: Any) -> str:
@@ -1896,11 +2208,14 @@ __all__ = [
     "LedgerRunResult",
     "align_dividends_to_trading_dates",
     "build_equity_export",
+    "build_positions_export",
     "dca_contribution_dates",
     "ledger_metrics_records",
+    "rebalance_schedule_dates",
     "render_ledger_markdown",
     "run_buy_and_hold_ledger",
     "run_dca_ledger",
+    "run_rebalance_ledger",
     "write_ledger_html",
     "write_ledger_report",
 ]

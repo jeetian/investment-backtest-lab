@@ -135,17 +135,19 @@ uv sync --extra dev
 - `reports/ledger_spy_qqq_dividends.csv`
 - `reports/ledger_spy_qqq_cash_flows.csv`
 - `reports/ledger_spy_qqq_equity.csv`
+- `reports/ledger_spy_qqq_positions.csv`
 - `reports/ledger_spy_qqq.html`
 
 驗證重點：
 
 - price source 應該是 raw price，不是 adjusted price。
-- `strategy=ledger_buy_and_hold` 與 `strategy=ledger_dca` 都應出現在 metrics。
+- `strategy=ledger_buy_and_hold`、`strategy=ledger_dca`、`strategy=ledger_rebalance` 都應出現在 metrics。
 - `dividend_mode=cash` 與 `dividend_mode=reinvest` 都應出現在 metrics。
 - `basis=USD` 與 `basis=TWD` 都應出現在 metrics。
 - dividends CSV 要能看到 gross dividend、withholding tax、net amount。
 - cash flows CSV 要能看到 DCA 每月投入。
-- HTML 要能打開並看到中文 dashboard shell、設定總覽、KPI、情境表、TWD/USD equity curve、drawdown、cash/market value、股息/稅/費用圖與 CSV 下載連結。
+- positions CSV 要能看到 SPY/QQQ 的 quantity、market value、weight。
+- HTML 要能打開並看到中文 dashboard shell、設定總覽、KPI、情境表、TWD/USD equity curve、drawdown、cash/market value、股息/稅/費用圖、權重漂移圖與 CSV 下載連結。
 
 ## 8. 排錯順序
 

@@ -115,13 +115,11 @@ strategy:
 rebalance:
   frequency: monthly
   target_weights:
-    SPY: 0.35
-    QQQ: 0.25
-    "0050": 0.25
-    "2330": 0.15
+    SPY: 0.60
+    QQQ: 0.40
 ```
 
-這是 `bt` 會用到的配置型策略設定，用於月/季再平衡。
+這是多資產 ledger 會用到的配置型策略設定。v1 先只做 SPY/QQQ 美股再平衡，台股與基金等美股核心穩定後再接。
 
 ## 5. 5 分鐘跑 yfinance live data
 
@@ -202,6 +200,7 @@ reports/ledger_spy_qqq_trades.csv
 reports/ledger_spy_qqq_dividends.csv
 reports/ledger_spy_qqq_cash_flows.csv
 reports/ledger_spy_qqq_equity.csv
+reports/ledger_spy_qqq_positions.csv
 reports/ledger_spy_qqq.html
 ```
 
@@ -210,13 +209,15 @@ reports/ledger_spy_qqq.html
 - `dividend_mode=cash`：股息扣除美股預扣稅後留現金。
 - `dividend_mode=reinvest`：股息扣稅後用對齊後交易日收盤價再投入。
 - `strategy=ledger_buy_and_hold`：期初一次投入後長期持有。
-- `strategy=ledger_dca`：每月第一個可交易日投入 `dca.contribution`，並把每次外部投入記錄到 cash flows。
+- `strategy=ledger_dca`：每月第一個可交易日投入 `dca.contribution`，目前範例是 1,000 USD，並把每次外部投入記錄到 cash flows。
+- `strategy=ledger_rebalance`：期初投入 10,000 USD 到 SPY 60% / QQQ 40%，每月第一個可交易日拉回目標權重。
 - `total_contributed`：投入本金；DCA 的 TWD 版本會用投入日 USD/TWD 匯率換算。
 - `simple_cash_return`：期末資產除以投入本金後的簡單現金報酬，適合 DCA 第一版閱讀。
 - `gross_dividends`：收到的稅前股息。
 - `withholding_tax`：美股股息預扣稅。
 - `fees_paid`：交易成本。
 - `final_shares`：最後持股數，會反映再投入。
+- `final_weights`：再平衡投組最後的 SPY/QQQ 權重。
 - `cash`：最後現金餘額。
 
 想看圖表，打開：
@@ -227,11 +228,11 @@ reports/ledger_spy_qqq.html
 
 新版 HTML 是第一版投資 dashboard。建議閱讀順序：
 
-- 第一屏先看「設定總覽」：期間、標的、策略、DCA 金額、初始資金、股息模式、基準幣別、資料來源、成本與稅率。
+- 第一屏先看「設定總覽」：期間、標的、策略、DCA 金額、初始資金、再平衡權重、股息模式、基準幣別、資料來源、成本與稅率。
 - 再看「關鍵績效」：期末資產、投入本金、simple cash return、最大回撤、股息、預扣稅、費用與最後持股。
-- 「策略與股息模式比較」會保留 `ledger_buy_and_hold`、`ledger_dca`、`cash`、`reinvest`，方便回到 CSV 追查。
-- 圖表圖例會使用短名稱，例如 `SPY B&H 現金`、`QQQ DCA 再投`；完整描述可看 hover 或上方情境表。
-- 最下方「審計明細與 CSV 下載」可以打開 trades、dividends、cash flows、equity 等明細檔。
+- 「策略與股息模式比較」會保留 `ledger_buy_and_hold`、`ledger_dca`、`ledger_rebalance`、`cash`、`reinvest`，方便回到 CSV 追查。
+- 圖表圖例會使用短名稱，例如 `SPY B&H 現金`、`QQQ DCA 再投`、`SPY_QQQ Rebal 現金`；完整描述可看 hover 或上方情境表。
+- 最下方「審計明細與 CSV 下載」可以打開 trades、dividends、cash flows、equity、positions 等明細檔。
 
 目前 v1 規則：yfinance dividend date 先視為可入帳日期；若遇到非交易日，會對齊到下一個可交易日。精確 ex-date/payment-date 差異會在後續版本強化。
 
@@ -267,7 +268,7 @@ strategy:
   params:
     fast_window: 20
     slow_window: 120
-    init_cash: 100000
+    init_cash: 10000
 ```
 
 改完後先跑離線 demo：

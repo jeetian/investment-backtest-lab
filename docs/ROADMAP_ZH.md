@@ -9,8 +9,8 @@
 完成條件：
 
 - 價格、股息、匯率資料可讀取、快取與品質檢查。
-- Account ledger 能記錄交易、股息、費用、稅、現金、持股與每日總資產。
-- 支援 buy and hold、DCA、股息現金入帳、股息再投入。
+- Account/portfolio ledger 能記錄交易、股息、費用、稅、現金、持股、權重與每日總資產。
+- 支援 buy and hold、DCA、SPY/QQQ 再平衡、股息現金入帳、股息再投入。
 - 支援基本美股交易成本與美股股息預扣稅。
 - 報表同時提供投資者摘要與 audit appendix。
 - L1 資料品質測試與 L2 golden tests 通過。
@@ -19,8 +19,8 @@
 
 - 美股價格與 USD/TWD 資料 smoke test 已可跑。
 - quickstart SPY/QQQ 報表已可輸出。
-- account ledger 已開始建立。
-- 美股 ledger 報表 v1 已接入 raw price、股息、股息再投入、DCA 外部投入、USD/TWD 與 HTML 圖表。
+- account ledger 與 portfolio ledger 已開始建立。
+- 美股 ledger 報表 v1 已接入 raw price、股息、股息再投入、DCA 外部投入、SPY/QQQ 再平衡、USD/TWD 與 HTML 圖表。
 
 ## Phase 2：策略與驗證擴充
 
@@ -29,7 +29,7 @@
 完成條件：
 
 - 策略 registry 可用 config 選擇策略與參數。
-- 月/季再平衡接入 ledger 或 audit report。
+- 再平衡從 SPY/QQQ 擴充到更多美股 ETF，並加入 cross-tool validation。
 - 動能輪動、波動度目標、研究版槓桿策略可以跑。
 - `vectorbt` 用於訊號、參數掃描與快速比較。
 - `bt` 用於配置型策略交叉檢查。

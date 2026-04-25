@@ -7,8 +7,10 @@ from investment_backtest_lab.costs import CostModel
 from investment_backtest_lab.ledger_reports import (
     align_dividends_to_trading_dates,
     dca_contribution_dates,
+    ledger_metrics_records,
     run_buy_and_hold_ledger,
     run_dca_ledger,
+    run_rebalance_ledger,
     write_ledger_report,
 )
 from investment_backtest_lab.models import (
@@ -24,6 +26,10 @@ from investment_backtest_lab.models import (
 
 def spy_asset() -> AssetSpec:
     return AssetSpec("SPY", Market.US, AssetType.ETF, "USD", DataSource.YFINANCE)
+
+
+def qqq_asset() -> AssetSpec:
+    return AssetSpec("QQQ", Market.US, AssetType.ETF, "USD", DataSource.YFINANCE)
 
 
 def zero_cost_model() -> CostModel:
@@ -72,6 +78,14 @@ def empty_dividend_frame() -> DividendFrame:
     return DividendFrame(asset=spy_asset(), data=data, currency="USD", source="empty-test")
 
 
+def empty_qqq_dividend_frame() -> DividendFrame:
+    data = pd.DataFrame(
+        {"dividend_per_share": pd.Series(dtype="float64")},
+        index=pd.DatetimeIndex([], name="date"),
+    )
+    return DividendFrame(asset=qqq_asset(), data=data, currency="USD", source="empty-test")
+
+
 def three_month_price_frame() -> PriceFrame:
     index = pd.bdate_range("2024-01-02", "2024-03-29")
     data = pd.DataFrame(
@@ -85,6 +99,21 @@ def three_month_price_frame() -> PriceFrame:
         index=index,
     )
     return PriceFrame(asset=spy_asset(), data=data, adjusted=False, source="raw-test")
+
+
+def three_month_qqq_price_frame() -> PriceFrame:
+    index = pd.bdate_range("2024-01-02", "2024-03-29")
+    data = pd.DataFrame(
+        {
+            "open": 100.0,
+            "high": 100.0,
+            "low": 100.0,
+            "close": 100.0,
+            "volume": 1_000,
+        },
+        index=index,
+    )
+    return PriceFrame(asset=qqq_asset(), data=data, adjusted=False, source="raw-test")
 
 
 def test_dividend_date_aligns_to_next_trading_day():
@@ -236,6 +265,30 @@ def test_dca_reinvested_dividend_increases_shares_before_contribution_buy():
     assert result.equity_curve.iloc[-1]["total_equity"] == pytest.approx(3_007)
 
 
+def test_rebalance_ledger_runs_portfolio_with_twd_metrics():
+    result = run_rebalance_ledger(
+        price_frames=[three_month_price_frame(), three_month_qqq_price_frame()],
+        dividend_frames=[empty_dividend_frame(), empty_qqq_dividend_frame()],
+        cost_model=zero_cost_model(),
+        initial_cash=10_000,
+        target_weights={"SPY": 0.6, "QQQ": 0.4},
+        frequency="monthly",
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
+    )
+    fx = pd.Series(30.0, index=three_month_price_frame().data.index)
+
+    assert result.strategy == "ledger_rebalance"
+    assert result.ticker == "SPY_QQQ"
+    assert not result.ledger.positions_history.empty
+    assert result.equity_curve.iloc[-1]["total_equity"] == pytest.approx(10_000)
+    records = ledger_metrics_records(result, base_currency="TWD", usd_twd=fx)
+    twd = [record for record in records if record["basis"] == "TWD"][0]
+    assert twd["ending_equity"] == pytest.approx(300_000)
+    assert "SPY=60.00%" in twd["final_weights"]
+    assert "QQQ=40.00%" in twd["final_weights"]
+
+
 def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     cash = run_buy_and_hold_ledger(
         price_frame=flat_price_frame(),
@@ -262,12 +315,22 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
         dividend_mode=DividendMode.CASH,
         withholding_rate=0.30,
     )
+    rebalance = run_rebalance_ledger(
+        price_frames=[three_month_price_frame(), three_month_qqq_price_frame()],
+        dividend_frames=[empty_dividend_frame(), empty_qqq_dividend_frame()],
+        cost_model=zero_cost_model(),
+        initial_cash=10_000,
+        target_weights={"SPY": 0.6, "QQQ": 0.4},
+        frequency="monthly",
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
+    )
     fx = pd.Series(30.0, index=flat_price_frame().data.index)
     fx = pd.concat([fx, pd.Series(30.0, index=three_month_price_frame().data.index)])
     fx = fx[~fx.index.duplicated(keep="last")].sort_index()
 
     report = write_ledger_report(
-        results=[cash, reinvest, dca],
+        results=[cash, reinvest, dca, rebalance],
         base_currency="TWD",
         usd_twd=fx,
         output_dir=tmp_path,
@@ -281,17 +344,22 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert report.dividends_path.exists()
     assert report.cash_flows_path.exists()
     assert report.equity_path.exists()
+    assert report.positions_path.exists()
     assert report.html_path.exists()
     assert set(report.metrics["basis"]) == {"USD", "TWD"}
     assert "ledger_dca" in set(report.metrics["strategy"])
+    assert "ledger_rebalance" in set(report.metrics["strategy"])
     dca_twd = report.metrics[
         (report.metrics["strategy"] == "ledger_dca") & (report.metrics["basis"] == "TWD")
     ].iloc[0]
     assert dca_twd["total_contributed"] == pytest.approx(90_000)
     assert dca_twd["simple_cash_return"] == pytest.approx(0)
     assert not report.cash_flows.empty
+    assert not report.positions.empty
+    assert "ledger_rebalance" in set(report.positions["strategy"])
     assert "美股 Ledger 報表" in report.markdown_path.read_text(encoding="utf-8")
     assert "外部現金流 CSV" in report.markdown_path.read_text(encoding="utf-8")
+    assert "部位權重 CSV" in report.markdown_path.read_text(encoding="utf-8")
     html = report.html_path.read_text(encoding="utf-8")
     assert "US Ledger Audit Report" in html
     assert "https://fonts.googleapis.com" in html
@@ -303,6 +371,9 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert "CSV 下載" in html
     assert "ledger_buy_and_hold" in html
     assert "ledger_dca" in html
+    assert "ledger_rebalance" in html
     assert "cash" in html
     assert "reinvest" in html
     assert "deposit" in html
+    assert "權重漂移" in html
+    assert "部位權重 CSV" in html

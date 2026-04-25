@@ -35,10 +35,15 @@ def performance_summary(
 
     excess = clean - risk_free_rate / periods_per_year
     annual_return = cagr(clean, periods_per_year=periods_per_year)
-    annual_volatility = float(clean.std(ddof=0) * np.sqrt(periods_per_year))
+    daily_std = clean.std(ddof=0)
+    annual_volatility = float(daily_std * np.sqrt(periods_per_year))
     downside = excess[excess < 0.0]
     downside_std = downside.std(ddof=0)
-    sharpe = float(excess.mean() / clean.std(ddof=0) * np.sqrt(periods_per_year))
+    sharpe = (
+        float(excess.mean() / daily_std * np.sqrt(periods_per_year))
+        if daily_std > 0
+        else np.nan
+    )
     sortino = (
         float(excess.mean() / downside_std * np.sqrt(periods_per_year))
         if len(downside) > 1 and downside_std > 0

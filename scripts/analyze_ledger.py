@@ -12,6 +12,7 @@ from investment_backtest_lab.data import MarketDataLoader
 from investment_backtest_lab.ledger_reports import (
     run_buy_and_hold_ledger,
     run_dca_ledger,
+    run_rebalance_ledger,
     write_ledger_report,
 )
 from investment_backtest_lab.models import AssetSpec, AssetType, DataSource, DividendMode, Market
@@ -31,8 +32,8 @@ def main() -> None:
     parser.add_argument(
         "--strategies",
         nargs="+",
-        default=["buy_hold", "dca"],
-        choices=["buy_hold", "dca"],
+        default=["buy_hold", "dca", "rebalance"],
+        choices=["buy_hold", "dca", "rebalance"],
     )
     args = parser.parse_args()
 
@@ -51,21 +52,29 @@ def main() -> None:
         end_date=end_date,
     )
 
-    results = []
+    price_frames = []
+    dividend_frames = []
     for asset in selected_assets:
         if asset.market != Market.US or asset.currency.upper() != "USD":
             raise ValueError(f"Ledger report v1 supports only USD US assets, got {asset.ticker}.")
-        price_frame = loader.load_asset(
-            asset,
-            start_date=start_date,
-            end_date=end_date,
-            adjusted=False,
+        price_frames.append(
+            loader.load_asset(
+                asset,
+                start_date=start_date,
+                end_date=end_date,
+                adjusted=False,
+            )
         )
-        dividend_frame = loader.load_dividends(
-            asset,
-            start_date=start_date,
-            end_date=end_date,
+        dividend_frames.append(
+            loader.load_dividends(
+                asset,
+                start_date=start_date,
+                end_date=end_date,
+            )
         )
+
+    results = []
+    for price_frame, dividend_frame in zip(price_frames, dividend_frames, strict=True):
         for mode in args.dividend_modes:
             if "buy_hold" in args.strategies:
                 results.append(
@@ -91,6 +100,22 @@ def main() -> None:
                     )
                 )
 
+    if "rebalance" in args.strategies:
+        target_weights = selected_target_weights(config.rebalance.target_weights, selected_assets)
+        for mode in args.dividend_modes:
+            results.append(
+                run_rebalance_ledger(
+                    price_frames=price_frames,
+                    dividend_frames=dividend_frames,
+                    cost_model=cost_model,
+                    initial_cash=config.ledger.initial_cash,
+                    target_weights=target_weights,
+                    frequency=config.rebalance.frequency,
+                    dividend_mode=mode,
+                    withholding_rate=config.tax.us.dividend_withholding_rate,
+                )
+            )
+
     slug = "_".join(ticker.lower().replace("/", "_").replace("=", "_") for ticker in args.tickers)
     report = write_ledger_report(
         results=results,
@@ -99,7 +124,12 @@ def main() -> None:
         output_dir=Path(args.output_dir),
         slug=slug,
         config_path=Path(args.config),
-        report_context=build_report_context(config, selected_assets, args.dividend_modes),
+        report_context=build_report_context(
+            config,
+            selected_assets,
+            args.dividend_modes,
+            args.strategies,
+        ),
     )
     print_terminal_summary(report.metrics, report.warnings)
     print(f"Markdown report: {report.markdown_path}")
@@ -108,6 +138,7 @@ def main() -> None:
     print(f"Dividends CSV:   {report.dividends_path}")
     print(f"Cash flows CSV:  {report.cash_flows_path}")
     print(f"Equity CSV:      {report.equity_path}")
+    print(f"Positions CSV:   {report.positions_path}")
     print(f"HTML report:     {report.html_path}")
 
 
@@ -115,7 +146,13 @@ def build_report_context(
     config: Any,
     selected_assets: list[AssetSpec],
     dividend_modes: list[str],
+    strategies: list[str],
 ) -> dict[str, object]:
+    target_weights = (
+        selected_target_weights(config.rebalance.target_weights, selected_assets)
+        if "rebalance" in strategies
+        else {}
+    )
     return {
         "start_date": config.start_date.isoformat(),
         "end_date": config.end_date.isoformat(),
@@ -124,6 +161,8 @@ def build_report_context(
         "initial_cash": config.ledger.initial_cash,
         "dca_contribution": config.dca.contribution,
         "dca_frequency": config.dca.frequency,
+        "rebalance_frequency": config.rebalance.frequency,
+        "target_weights": target_weights,
         "account_currency": config.ledger.account_currency,
         "base_currency": config.ledger.base_currency,
         "generated_at": pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -147,6 +186,24 @@ def format_us_cost_summary(cost_model_config: dict[str, Any]) -> str:
         f"slippage={us_cost.get('slippage_bps', 'n/a')} bps · "
         f"FX spread={fx_cost.get('spread_bps', 'n/a')} bps"
     )
+
+
+def selected_target_weights(
+    target_weights: dict[str, float],
+    selected_assets: list[AssetSpec],
+) -> dict[str, float]:
+    selected_tickers = [asset.ticker for asset in selected_assets]
+    missing = [ticker for ticker in selected_tickers if ticker not in target_weights]
+    if missing:
+        raise ValueError(f"Missing rebalance target weights for selected tickers: {missing}")
+    weights = {ticker: float(target_weights[ticker]) for ticker in selected_tickers}
+    total_weight = sum(weights.values())
+    if not 0.999 <= total_weight <= 1.001:
+        raise ValueError(
+            "Selected rebalance target weights must sum to 1.0, "
+            f"got {total_weight:.4f} for {selected_tickers}."
+        )
+    return weights
 
 
 def select_assets(universe: list[AssetSpec], tickers: list[str]) -> list[AssetSpec]:
@@ -198,6 +255,7 @@ def print_terminal_summary(metrics: pd.DataFrame, warnings: list[str]) -> None:
             "withholding_tax",
             "fees_paid",
             "final_shares",
+            "final_weights",
             "cash",
         ]
     ].copy()
