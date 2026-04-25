@@ -100,6 +100,17 @@ def test_dividend_reinvestment_increases_shares_without_leverage():
     assert ledger.trades.iloc[-1]["note"] == "dividend reinvestment"
 
 
+def test_buy_with_cash_uses_only_affordable_cash_budget():
+    ledger = AccountLedger(spy_asset(), starting_cash=1_000, cost_model=zero_cost_model())
+
+    trade = ledger.buy_with_cash("2024-01-02", cash_amount=250, price=100)
+
+    assert trade is not None
+    assert trade.quantity == pytest.approx(2.5)
+    assert ledger.cash == pytest.approx(750)
+    assert ledger.positions["SPY"] == pytest.approx(2.5)
+
+
 def test_build_equity_curve_snapshots_each_price_date():
     ledger = AccountLedger(spy_asset(), starting_cash=1_000, cost_model=zero_cost_model())
     ledger.buy("2024-01-02", quantity=10, price=10)

@@ -132,11 +132,17 @@ class DividendConfig:
 @dataclass(frozen=True)
 class LedgerConfig:
     base_currency: str = "TWD"
+    account_currency: str = "USD"
+    initial_cash: float = 100_000.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> LedgerConfig:
         data = data or {}
-        return cls(base_currency=str(data.get("base_currency", "TWD")).upper())
+        return cls(
+            base_currency=str(data.get("base_currency", "TWD")).upper(),
+            account_currency=str(data.get("account_currency", "USD")).upper(),
+            initial_cash=float(data.get("initial_cash", 100_000.0)),
+        )
 
 
 @dataclass(frozen=True)
@@ -183,6 +189,17 @@ class PriceFrame:
         return self.data["close"].rename(self.asset.ticker)
 
 
+@dataclass(frozen=True)
+class DividendFrame:
+    asset: AssetSpec
+    data: pd.DataFrame
+    currency: str
+    source: str
+
+    def dividend_per_share(self) -> pd.Series:
+        return self.data["dividend_per_share"].rename(self.asset.ticker)
+
+
 def normalize_ohlcv(
     frame: pd.DataFrame,
     *,
@@ -219,3 +236,46 @@ def normalize_ohlcv(
     data = data[["open", "high", "low", "close", "volume"]].sort_index()
     data.index = data.index.tz_localize(None)
     return data.apply(pd.to_numeric, errors="coerce").dropna(subset=["close"])
+
+
+def normalize_dividends(
+    frame: pd.Series | pd.DataFrame,
+    *,
+    date_column: str = "date",
+    value_column: str = "dividend_per_share",
+) -> pd.DataFrame:
+    """Return a date-indexed dividend frame with one canonical value column."""
+    if isinstance(frame, pd.Series):
+        data = frame.rename(value_column).to_frame()
+    else:
+        data = frame.copy()
+        data.columns = [str(col).strip().lower().replace(" ", "_") for col in data.columns]
+        normalized_value_column = str(value_column).strip().lower().replace(" ", "_")
+        if normalized_value_column not in data.columns:
+            candidates = ["dividends", "dividend", "cash_dividend", "value", "amount"]
+            match = next((column for column in candidates if column in data.columns), None)
+            if match is not None:
+                data = data.rename(columns={match: normalized_value_column})
+
+    if data.empty:
+        return pd.DataFrame(
+            {"dividend_per_share": pd.Series(dtype="float64")},
+            index=pd.DatetimeIndex([], name="date"),
+        )
+
+    normalized_date_column = str(date_column).strip().lower().replace(" ", "_")
+    if normalized_date_column in data.columns:
+        data[normalized_date_column] = pd.to_datetime(data[normalized_date_column])
+        data = data.set_index(normalized_date_column)
+    elif not isinstance(data.index, pd.DatetimeIndex):
+        raise ValueError("Dividend data must include a date column or DatetimeIndex.")
+
+    if value_column not in data.columns:
+        raise ValueError(f"Missing dividend value column: {value_column}")
+
+    data.index = data.index.tz_localize(None)
+    data = data[[value_column]].sort_index()
+    data[value_column] = pd.to_numeric(data[value_column], errors="coerce")
+    data = data.dropna(subset=[value_column])
+    data = data[data[value_column] > 0]
+    return data.rename_axis("date")

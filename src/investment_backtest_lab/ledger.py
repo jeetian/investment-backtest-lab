@@ -235,6 +235,22 @@ class AccountLedger:
         self._record_cost_events(timestamp, costs, note=f"sell {self.asset.ticker}")
         return event
 
+    def buy_with_cash(
+        self,
+        trade_date: DateLike,
+        *,
+        cash_amount: float,
+        price: float,
+        note: str = "",
+    ) -> TradeEvent | None:
+        cash_amount = _non_negative_float(cash_amount, "cash_amount")
+        price = _positive_float(price, "price")
+        cash_budget = min(cash_amount, self.cash)
+        quantity = self._max_affordable_buy_quantity(cash_budget, price)
+        if quantity <= 0:
+            return None
+        return self.buy(trade_date, quantity=quantity, price=price, note=note)
+
     def cash_dividend(
         self,
         payment_date: DateLike,
@@ -277,14 +293,13 @@ class AccountLedger:
             if price is None:
                 raise ValueError("price is required when reinvest=True.")
             reinvest_price = _positive_float(price, "price")
-            reinvested_quantity = self._max_affordable_buy_quantity(net_amount, reinvest_price)
-            if reinvested_quantity > 0:
-                self.buy(
-                    timestamp,
-                    quantity=reinvested_quantity,
-                    price=reinvest_price,
-                    note="dividend reinvestment",
-                )
+            trade = self.buy_with_cash(
+                timestamp,
+                cash_amount=net_amount,
+                price=reinvest_price,
+                note="dividend reinvestment",
+            )
+            reinvested_quantity = trade.quantity if trade is not None else 0.0
 
         cash_amount = self.cash - cash_before
         if abs(cash_amount) < 1e-9:

@@ -57,6 +57,8 @@ tax:
 
 ledger:
   base_currency: TWD
+  account_currency: USD
+  initial_cash: 100000
 
 cost_model:
   tw:

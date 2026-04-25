@@ -58,6 +58,8 @@ uv sync --extra dev
 - 均線訊號
 - DCA 現金流計算
 - 美股 account ledger golden cases
+- 美股 dividend data/cache golden cases
+- 美股 ledger report golden cases
 - 中文文件 UTF-8 與 scope 連結
 
 ## 4. Import Smoke Test
@@ -117,6 +119,31 @@ uv sync --extra dev
 目前未設定 `FINMIND_TOKEN`，所以 `0050`、`2330` 尚未測 live data。
 
 ## 7. 排錯順序
+
+## 7. Ledger 報表驗證
+
+```powershell
+.\.venv\Scripts\python.exe scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+```
+
+預期輸出：
+
+- `reports/ledger_spy_qqq.md`
+- `reports/ledger_spy_qqq_metrics.csv`
+- `reports/ledger_spy_qqq_trades.csv`
+- `reports/ledger_spy_qqq_dividends.csv`
+- `reports/ledger_spy_qqq_equity.csv`
+- `reports/ledger_spy_qqq.html`
+
+驗證重點：
+
+- price source 應該是 raw price，不是 adjusted price。
+- `dividend_mode=cash` 與 `dividend_mode=reinvest` 都應出現在 metrics。
+- `basis=USD` 與 `basis=TWD` 都應出現在 metrics。
+- dividends CSV 要能看到 gross dividend、withholding tax、net amount。
+- HTML 要能打開並看到 equity curve、drawdown、cash/market value、dividend/tax timeline。
+
+## 8. 排錯順序
 
 若驗證失敗，建議順序：
 

@@ -7,10 +7,11 @@
 完成後你會得到：
 
 - 一個可用的 Python 3.12 + uv 虛擬環境
-- 一次完整測試結果：`10 passed`
+- 一次完整測試結果：全部通過
 - 一次 import smoke test：`vectorbt`、`bt`、`quantstats`、`yfinance`、`FinMind` 都可匯入
 - 一次離線 prototype 結果：均線策略摘要、DCA 摘要、Rolling 3Y CAGR
 - 一次 yfinance live data 檢查：`SPY`、`QQQ`、`USDTWD=X`
+- 一份可審計的美股 ledger 報表：raw price、股息、稅、成本、USD/TWD
 
 ## 1. 1 分鐘確認環境
 
@@ -60,7 +61,7 @@ uv run python scripts\run_prototype.py --config configs\mvp_example.yaml --offli
 
 預期結果：
 
-- `pytest` 顯示 `10 passed`
+- `pytest` 顯示全部通過
 - `smoke_imports.py` 每個套件都顯示 `[OK]`
 - `run_prototype.py` 輸出：
   - `Moving-average signal sample`
@@ -184,7 +185,44 @@ reports/quickstart_spy_qqq_metrics.csv
 - `basis=USD`：原幣績效。
 - `basis=TWD`：用 USD/TWD 匯率換算後的台幣績效。
 
-## 7. 設定 FinMind Token
+## 7. 跑可審計 Ledger 報表
+
+`analyze_results.py` 適合快速比較策略；`analyze_ledger.py` 則用 raw price 加上明確股息現金流，避免 adjusted price 和股息重複計算。這份報表是後續嚴謹回測的主線。
+
+```powershell
+uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+```
+
+輸出檔案會在：
+
+```text
+reports/ledger_spy_qqq.md
+reports/ledger_spy_qqq_metrics.csv
+reports/ledger_spy_qqq_trades.csv
+reports/ledger_spy_qqq_dividends.csv
+reports/ledger_spy_qqq_equity.csv
+reports/ledger_spy_qqq.html
+```
+
+先打開 `reports/ledger_spy_qqq.md`。它會告訴你：
+
+- `dividend_mode=cash`：股息扣除美股預扣稅後留現金。
+- `dividend_mode=reinvest`：股息扣稅後用對齊後交易日收盤價再投入。
+- `gross_dividends`：收到的稅前股息。
+- `withholding_tax`：美股股息預扣稅。
+- `fees_paid`：交易成本。
+- `final_shares`：最後持股數，會反映再投入。
+- `cash`：最後現金餘額。
+
+想看圖表，打開：
+
+```text
+reports/ledger_spy_qqq.html
+```
+
+目前 v1 規則：yfinance dividend date 先視為可入帳日期；若遇到非交易日，會對齊到下一個可交易日。精確 ex-date/payment-date 差異會在後續版本強化。
+
+## 8. 設定 FinMind Token
 
 台股與台灣 ETF live data 需要 FinMind token。先用暫時環境變數：
 
@@ -200,7 +238,7 @@ uv run python scripts\smoke_data.py --network
 
 不要把 token 寫進任何會提交的檔案。
 
-## 8. 第一個可以改的策略
+## 9. 第一個可以改的策略
 
 從均線參數開始最安全：
 
@@ -221,7 +259,7 @@ uv run python scripts\run_prototype.py --config configs\mvp_example.yaml --offli
 
 這個 demo 目前是 synthetic price，所以目的是確認流程和輸出，不是做真實投資結論。
 
-## 9. 第一個可以改的資產池
+## 10. 第一個可以改的資產池
 
 美股可以先改成其他 yfinance ticker，例如：
 
@@ -243,7 +281,7 @@ universe:
 
 台股可保留 `0050`、`2330`，等 `FINMIND_TOKEN` 設好後再測 live data。
 
-## 10. 常見錯誤
+## 11. 常見錯誤
 
 ### 找不到 `uv`
 
@@ -281,11 +319,11 @@ uv run python scripts\smoke_data.py --network
 
 若仍失敗，先確認瀏覽器可連 Yahoo Finance，再檢查公司/學校網路是否擋外部 API。
 
-## 11. 下一步建議
+## 12. 下一步建議
 
 照這份 quickstart 跑通後，下一個自然步驟是：
 
-- 把 `run_prototype.py` 的 live mode 做成更完整的 config-driven backtest runner
-- 增加一份真實 yfinance ETF notebook
-- 加入 FinMind token 後驗證 `0050`、`2330`
-- 把 `bt` 再平衡結果整理成與 `vectorbt` 一致的報表格式
+- 把 DCA 接入 ledger。
+- 把月/季再平衡接入 ledger。
+- 加入 FinMind token 後驗證 `0050`、`2330`。
+- Phase 1 收尾時另開一個 chat 做冷讀驗證。

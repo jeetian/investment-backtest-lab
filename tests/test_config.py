@@ -12,3 +12,5 @@ def test_load_mvp_config():
     assert config.tax.us.dividend_withholding_rate == 0.30
     assert config.dividend.mode == DividendMode.CASH
     assert config.ledger.base_currency == "TWD"
+    assert config.ledger.account_currency == "USD"
+    assert config.ledger.initial_cash == 100_000

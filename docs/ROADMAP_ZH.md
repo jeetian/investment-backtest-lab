@@ -20,6 +20,7 @@
 - 美股價格與 USD/TWD 資料 smoke test 已可跑。
 - quickstart SPY/QQQ 報表已可輸出。
 - account ledger 已開始建立。
+- 美股 ledger 報表 v1 已接入 raw price、股息、股息再投入、USD/TWD 與 HTML 圖表。
 
 ## Phase 2：策略與驗證擴充
 

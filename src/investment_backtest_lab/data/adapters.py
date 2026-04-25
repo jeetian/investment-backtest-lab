@@ -6,7 +6,13 @@ from typing import Protocol
 
 import pandas as pd
 
-from investment_backtest_lab.models import AssetSpec, PriceFrame, normalize_ohlcv
+from investment_backtest_lab.models import (
+    AssetSpec,
+    DividendFrame,
+    PriceFrame,
+    normalize_dividends,
+    normalize_ohlcv,
+)
 
 
 class PriceDataAdapter(Protocol):
@@ -16,7 +22,18 @@ class PriceDataAdapter(Protocol):
         *,
         start_date: str,
         end_date: str,
+        adjusted: bool | None = None,
     ) -> PriceFrame: ...
+
+
+class DividendDataAdapter(Protocol):
+    def load_dividends(
+        self,
+        asset: AssetSpec,
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> DividendFrame: ...
 
 
 class CsvPriceAdapter:
@@ -24,7 +41,14 @@ class CsvPriceAdapter:
         self.path_template = str(path_template)
         self.adjusted = adjusted
 
-    def load(self, asset: AssetSpec, *, start_date: str, end_date: str) -> PriceFrame:
+    def load(
+        self,
+        asset: AssetSpec,
+        *,
+        start_date: str,
+        end_date: str,
+        adjusted: bool | None = None,
+    ) -> PriceFrame:
         path = Path(self.path_template.format(ticker=asset.ticker, cache_key=asset.cache_key))
         if not path.exists():
             raise FileNotFoundError(f"CSV price file not found: {path}")
@@ -32,21 +56,34 @@ class CsvPriceAdapter:
         raw = pd.read_csv(path)
         data = normalize_ohlcv(raw)
         data = data.loc[pd.Timestamp(start_date) : pd.Timestamp(end_date)]
-        return PriceFrame(asset=asset, data=data, adjusted=self.adjusted, source=str(path))
+        return PriceFrame(
+            asset=asset,
+            data=data,
+            adjusted=self.adjusted if adjusted is None else adjusted,
+            source=str(path),
+        )
 
 
 class YFinancePriceAdapter:
     def __init__(self, auto_adjust: bool = True):
         self.auto_adjust = auto_adjust
 
-    def load(self, asset: AssetSpec, *, start_date: str, end_date: str) -> PriceFrame:
+    def load(
+        self,
+        asset: AssetSpec,
+        *,
+        start_date: str,
+        end_date: str,
+        adjusted: bool | None = None,
+    ) -> PriceFrame:
         import yfinance as yf
 
+        auto_adjust = self.auto_adjust if adjusted is None else adjusted
         raw = yf.download(
             asset.ticker,
             start=start_date,
             end=end_date,
-            auto_adjust=self.auto_adjust,
+            auto_adjust=auto_adjust,
             progress=False,
             actions=False,
             group_by="column",
@@ -61,8 +98,32 @@ class YFinancePriceAdapter:
         return PriceFrame(
             asset=asset,
             data=data,
-            adjusted=self.auto_adjust,
+            adjusted=auto_adjust,
             source=f"yfinance:{asset.ticker}",
+        )
+
+
+class YFinanceDividendAdapter:
+    def load_dividends(
+        self,
+        asset: AssetSpec,
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> DividendFrame:
+        import yfinance as yf
+
+        raw = yf.Ticker(asset.ticker).dividends
+        data = normalize_dividends(raw)
+        if not data.empty:
+            start = pd.Timestamp(start_date)
+            end = pd.Timestamp(end_date)
+            data = data.loc[(data.index >= start) & (data.index <= end)]
+        return DividendFrame(
+            asset=asset,
+            data=data,
+            currency=asset.currency,
+            source=f"yfinance:dividends:{asset.ticker}",
         )
 
 
@@ -80,18 +141,26 @@ class FinMindPriceAdapter:
         self.adjusted_dataset = adjusted_dataset
         self.prefer_adjusted = prefer_adjusted
 
-    def load(self, asset: AssetSpec, *, start_date: str, end_date: str) -> PriceFrame:
+    def load(
+        self,
+        asset: AssetSpec,
+        *,
+        start_date: str,
+        end_date: str,
+        adjusted: bool | None = None,
+    ) -> PriceFrame:
         from FinMind.data import DataLoader
 
         loader = DataLoader()
         if self.token:
             loader.login_by_token(api_token=self.token)
 
-        dataset = self.adjusted_dataset if self.prefer_adjusted else self.dataset
+        prefer_adjusted = self.prefer_adjusted if adjusted is None else adjusted
+        dataset = self.adjusted_dataset if prefer_adjusted else self.dataset
         raw = self._download(loader, dataset, asset.ticker, start_date, end_date)
         adjusted = dataset == self.adjusted_dataset
 
-        if raw.empty and self.prefer_adjusted:
+        if raw.empty and prefer_adjusted:
             raw = self._download(loader, self.dataset, asset.ticker, start_date, end_date)
             adjusted = False
 
