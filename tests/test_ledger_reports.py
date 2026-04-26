@@ -378,6 +378,9 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert "B&amp;H 一次投入" in html
     assert "DCA 定期投入" in html
     assert "標準化比較" in html
+    assert "B&amp;H 標準化路徑" in html
+    assert "DCA 標準化路徑" in html
+    assert "再平衡標準化路徑" in html
     assert "非實際投入結果，不可當作本金報酬排名" in html
     assert "CSV 下載" in html
     assert "ledger_buy_and_hold" in html

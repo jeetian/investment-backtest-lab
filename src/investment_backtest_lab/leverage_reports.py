@@ -1167,6 +1167,7 @@ def _render_html(
   {risk_section}
   {audit_section}
   {warnings_html}
+  {_scenario_switcher_script()}
 </main>
 </body>
 </html>
@@ -1259,9 +1260,20 @@ def _render_leverage_family_section(
     family_metrics = _filter_strategies(metrics, strategies)
     family_curves = _filter_strategies(curves, strategies)
     chips = _render_leverage_chips(family_metrics)
-    kpis = _render_leverage_family_kpis(family_metrics, focus=focus)
+    default_key = _default_scenario_key(family_metrics, focus=focus)
+    selector = _render_scenario_selector(
+        family_metrics,
+        group_id=focus,
+        default_key=default_key,
+    )
+    scenario_panels = _render_leverage_scenario_panels(
+        metrics=family_metrics,
+        curves=family_curves,
+        group_id=focus,
+        default_key=default_key,
+        focus=focus,
+    )
     table = _render_leverage_metrics_table(family_metrics, focus=focus)
-    charts = _render_leverage_family_charts(family_curves, family_metrics, focus=focus)
     return f"""<section class="section-block family-section" id="{section_id}">
   <div class="section-heading">
     <div>
@@ -1271,9 +1283,9 @@ def _render_leverage_family_section(
     <p>{escape(description)}</p>
   </div>
   {chips}
-  {kpis}
+  {selector}
+  {scenario_panels}
   {table}
-  {charts}
 </section>"""
 
 
@@ -1294,6 +1306,158 @@ def _render_leverage_chips(metrics: pd.DataFrame) -> str:
     ]
     return "<div class=\"filter-row\">" + "".join(
         f"<span>{escape(chip)}</span>" for chip in chips
+    ) + "</div>"
+
+
+def _render_scenario_selector(
+    metrics: pd.DataFrame,
+    *,
+    group_id: str,
+    default_key: str,
+) -> str:
+    if metrics.empty:
+        return ""
+    buttons: list[str] = []
+    for row in metrics.itertuples():
+        key = _scenario_key(row.ticker, row.strategy, row.dividend_mode)
+        active = " is-active" if key == default_key else ""
+        buttons.append(
+            f"""<button class="scenario-button{active}" type="button"
+    data-scenario-group="{escape(group_id)}"
+    data-scenario-button="{escape(key)}">
+  <span>{escape(_scenario_button_title(row))}</span>
+  <small>{escape(_scenario_button_subtitle(row))}</small>
+</button>"""
+        )
+    return f"""<div class="scenario-selector" aria-label="情境選擇">
+  {"".join(buttons)}
+</div>"""
+
+
+def _render_leverage_scenario_panels(
+    *,
+    metrics: pd.DataFrame,
+    curves: pd.DataFrame,
+    group_id: str,
+    default_key: str,
+    focus: str,
+) -> str:
+    if metrics.empty:
+        return '<p class="empty-state">沒有可顯示的情境。</p>'
+    panels: list[str] = []
+    for row in metrics.itertuples():
+        key = _scenario_key(row.ticker, row.strategy, row.dividend_mode)
+        active = " is-active" if key == default_key else ""
+        scenario_curve = _curve_for_scenario(
+            curves,
+            ticker=str(row.ticker),
+            strategy=str(row.strategy),
+            dividend_mode=str(row.dividend_mode),
+        )
+        summary = _render_scenario_summary(row)
+        kpis = _render_single_scenario_kpis(row, focus=focus)
+        charts = _render_single_scenario_charts(
+            scenario_curve,
+            focus=focus,
+            scenario_label=_scenario_full(row.ticker, row.strategy, row.dividend_mode),
+        )
+        panels.append(
+            f"""<div class="scenario-panel{active}"
+    data-scenario-group="{escape(group_id)}"
+    data-scenario-panel="{escape(key)}">
+  {summary}
+  {kpis}
+  {charts}
+</div>"""
+        )
+    return "\n".join(panels)
+
+
+def _render_scenario_summary(row: Any) -> str:
+    items = [
+        ("情境", _scenario_full(row.ticker, row.strategy, row.dividend_mode)),
+        ("投入本金", f"{_format_money(row.total_contributed_usd)} USD"),
+        ("期末資產", f"{_format_money(row.ending_equity_usd)} USD"),
+        ("期末負債", f"{_format_money(row.final_debt)} USD"),
+        ("最差安全緩衝", _format_percent(row.worst_safety_buffer)),
+        ("Margin Call", str(row.margin_call_count)),
+    ]
+    tiles = "\n".join(
+        f"""<div class="mini-stat">
+  <span>{escape(label)}</span>
+  <strong>{escape(value)}</strong>
+</div>"""
+        for label, value in items
+    )
+    return f"""<article class="scenario-summary">
+  <div>
+    <p class="eyebrow">Selected Scenario</p>
+    <h3>{escape(_scenario_button_title(row))}</h3>
+  </div>
+  <div class="mini-stat-grid">{tiles}</div>
+</article>"""
+
+
+def _render_single_scenario_kpis(row: Any, *, focus: str) -> str:
+    if focus == "dca":
+        cards = [
+            ("累計投入", _format_money(row.total_contributed_usd), "USD 外部現金流"),
+            ("期末資產", _format_money(row.ending_equity_usd), "USD"),
+            ("Simple Cash Return", _format_percent(row.simple_cash_return), "DCA 主要口徑"),
+            ("最高實際槓桿", _format_leverage(row.max_actual_leverage), "路徑最高值"),
+        ]
+    else:
+        cards = [
+            ("CAGR", _format_percent(row.cagr), "無外部現金流時較適用"),
+            ("Sharpe", _format_number(row.sharpe), "風險調整報酬"),
+            ("最大回撤", _format_percent(row.max_drawdown), "槓桿後回撤"),
+            ("利息成本", _format_money(row.interest_paid), "USD"),
+        ]
+    cards_html = "\n".join(
+        f"""<article class="kpi-card compact-kpi">
+  <span>{escape(label)}</span>
+  <strong>{escape(value)}</strong>
+  <small>{escape(note)}</small>
+</article>"""
+        for label, value, note in cards
+    )
+    return f'<div class="kpi-grid compact-kpi-grid">{cards_html}</div>'
+
+
+def _render_single_scenario_charts(
+    curve: pd.DataFrame,
+    *,
+    focus: str,
+    scenario_label: str,
+) -> str:
+    chart_specs = [
+        (
+            f"{focus}-equity-single",
+            "權益曲線",
+            "只顯示目前選取情境，不再把所有策略塞在同一張圖。",
+            _build_single_curve_figure(
+                curve,
+                value_column="total_equity",
+                yaxis_title="USD",
+                scenario_label=scenario_label,
+            ),
+        ),
+        (
+            f"{focus}-safety-single",
+            "安全緩衝",
+            "安全緩衝越接近 0 越危險；低於門檻會觸發降槓桿。",
+            _build_single_curve_figure(
+                curve,
+                value_column="safety_buffer",
+                yaxis_title="Safety Buffer",
+                scenario_label=scenario_label,
+                percent=True,
+            ),
+        ),
+    ]
+    return '<div class="chart-grid two-up">' + "\n".join(
+        _render_chart_card(chart_id, title, description, figure)
+        for chart_id, title, description, figure in chart_specs
     ) + "</div>"
 
 
@@ -1446,11 +1610,38 @@ def _render_leverage_family_charts(
 
 
 def _render_leverage_normalized_section(curves: pd.DataFrame) -> str:
-    chart = _render_chart_card(
-        "normalized-leverage-equity",
-        "10,000 USD 標準化權益曲線",
-        "僅比較槓桿後路徑形狀、波動和回撤，不代表實際投入結果。",
-        _build_normalized_leverage_figure(curves),
+    chart_specs = [
+        (
+            "normalized-buy-hold",
+            "B&H 標準化路徑",
+            ["buy_hold_leveraged", "dynamic_buy_hold_leveraged"],
+            "SPY",
+        ),
+        (
+            "normalized-dca",
+            "DCA 標準化路徑",
+            ["dca_leveraged", "dynamic_dca_leveraged"],
+            "SPY",
+        ),
+        (
+            "normalized-rebalance",
+            "再平衡標準化路徑",
+            ["rebalance_leveraged", "dynamic_rebalance_leveraged"],
+            "SPY_QQQ",
+        ),
+    ]
+    charts = "\n".join(
+        _render_chart_card(
+            chart_id,
+            title,
+            "最多四條線：固定/動態 × 現金/再投。用來看路徑形狀，不看實際本金。",
+            _build_normalized_leverage_figure(
+                curves,
+                strategies=strategies,
+                preferred_ticker=preferred_ticker,
+            ),
+        )
+        for chart_id, title, strategies, preferred_ticker in chart_specs
     )
     return f"""<section class="section-block" id="view-normalized">
   <div class="section-heading">
@@ -1464,7 +1655,7 @@ def _render_leverage_normalized_section(curves: pd.DataFrame) -> str:
     <strong>非實際投入結果，不可當作本金報酬排名。</strong>
     <p>真正的投入與收益請回各策略族群看累計投入、期末資產和現金流。</p>
   </div>
-  {chart}
+  <div class="chart-grid three-up">{charts}</div>
 </section>"""
 
 
@@ -1474,23 +1665,14 @@ def _render_leverage_risk_section(
     policy: pd.DataFrame,
 ) -> str:
     risk_table = _render_leverage_risk_table(metrics)
-    charts = "\n".join(
-        [
-            _render_chart_card(
-                "actual-leverage-chart",
-                "目標槓桿 vs 實際槓桿",
-                "動態策略會依趨勢、波動與安全緩衝調整 target leverage。",
-                _build_actual_leverage_figure(curves),
-            ),
-            _render_chart_card(
-                "safety-buffer-chart",
-                "安全緩衝",
-                "低於門檻時會觸發自動降槓桿；低於維持率會標記 margin call。",
-                _build_safety_buffer_figure(curves),
-            ),
-        ]
+    default_key = _default_scenario_key(metrics, focus="risk")
+    selector = _render_scenario_selector(metrics, group_id="risk", default_key=default_key)
+    risk_panels = _render_risk_scenario_panels(
+        metrics=metrics,
+        curves=curves,
+        policy=policy,
+        default_key=default_key,
     )
-    policy_preview = _render_policy_preview(policy)
     return f"""<section class="section-block" id="view-leverage-risk">
   <div class="section-heading">
     <div>
@@ -1499,10 +1681,85 @@ def _render_leverage_risk_section(
     </div>
     <p>這區不追求最高 CAGR，而是先看借款、利息、安全緩衝與 margin call 是否可接受。</p>
   </div>
+  {selector}
+  {risk_panels}
   {risk_table}
-  {charts}
-  {policy_preview}
 </section>"""
+
+
+def _render_risk_scenario_panels(
+    *,
+    metrics: pd.DataFrame,
+    curves: pd.DataFrame,
+    policy: pd.DataFrame,
+    default_key: str,
+) -> str:
+    if metrics.empty:
+        return '<p class="empty-state">沒有槓桿風險資料。</p>'
+    panels: list[str] = []
+    for row in metrics.itertuples():
+        key = _scenario_key(row.ticker, row.strategy, row.dividend_mode)
+        active = " is-active" if key == default_key else ""
+        curve = _curve_for_scenario(
+            curves,
+            ticker=str(row.ticker),
+            strategy=str(row.strategy),
+            dividend_mode=str(row.dividend_mode),
+        )
+        policy_preview = _render_policy_preview(
+            _policy_for_scenario(
+                policy,
+                ticker=str(row.ticker),
+                strategy=str(row.strategy),
+                dividend_mode=str(row.dividend_mode),
+            )
+        )
+        charts = "\n".join(
+            [
+                _render_chart_card(
+                    "risk-debt",
+                    "Debt 負債",
+                    "只看目前選取情境的借款餘額，避免和 safety buffer 混用雙軸。",
+                    _build_single_curve_figure(
+                        curve,
+                        value_column="debt",
+                        yaxis_title="Debt USD",
+                        scenario_label=_scenario_full(row.ticker, row.strategy, row.dividend_mode),
+                    ),
+                ),
+                _render_chart_card(
+                    "risk-safety",
+                    "Safety Buffer 安全緩衝",
+                    "安全緩衝越接近 0 越危險。",
+                    _build_single_curve_figure(
+                        curve,
+                        value_column="safety_buffer",
+                        yaxis_title="Safety Buffer",
+                        scenario_label=_scenario_full(row.ticker, row.strategy, row.dividend_mode),
+                        percent=True,
+                    ),
+                ),
+                _render_chart_card(
+                    "risk-target-actual",
+                    "目標槓桿 vs 實際槓桿",
+                    "實線為 actual，虛線為 target；只顯示目前選取情境。",
+                    _build_single_actual_target_figure(
+                        curve,
+                        scenario_label=_scenario_full(row.ticker, row.strategy, row.dividend_mode),
+                    ),
+                ),
+            ]
+        )
+        panels.append(
+            f"""<div class="scenario-panel{active}"
+    data-scenario-group="risk"
+    data-scenario-panel="{escape(key)}">
+  {_render_scenario_summary(row)}
+  <div class="chart-grid three-up">{charts}</div>
+  {policy_preview}
+</div>"""
+        )
+    return "\n".join(panels)
 
 
 def _render_leverage_risk_table(metrics: pd.DataFrame) -> str:
@@ -1616,6 +1873,81 @@ def _setting_tile(label: str, value: str) -> str:
         f'<div class="value">{escape(value)}</div>'
         "</div>"
     )
+
+
+def _build_single_curve_figure(
+    curve: pd.DataFrame,
+    *,
+    value_column: str,
+    yaxis_title: str,
+    scenario_label: str,
+    percent: bool = False,
+) -> Any:
+    figure = go.Figure()
+    if curve.empty or value_column not in curve.columns:
+        _add_empty_annotation(figure, f"沒有 {value_column} 資料")
+        return _style_leverage_figure(figure, yaxis_title=yaxis_title, showlegend=False)
+    figure.add_trace(
+        go.Scatter(
+            x=pd.to_datetime(curve["date"]),
+            y=curve[value_column],
+            mode="lines",
+            name=yaxis_title,
+            line={"color": "#3f5f73", "width": 2.2},
+            hovertemplate=(
+                f"{escape(scenario_label)}<br>%{{x|%Y-%m-%d}}"
+                f"<br>{escape(yaxis_title)}: %{{y:{'.2%' if percent else ',.2f'}}}"
+                "<extra></extra>"
+            ),
+            showlegend=False,
+        )
+    )
+    figure = _style_leverage_figure(figure, yaxis_title=yaxis_title, showlegend=False)
+    if percent:
+        figure.update_yaxes(tickformat=".0%")
+    return figure
+
+
+def _build_single_actual_target_figure(
+    curve: pd.DataFrame,
+    *,
+    scenario_label: str,
+) -> Any:
+    figure = go.Figure()
+    if curve.empty or "actual_leverage" not in curve.columns:
+        _add_empty_annotation(figure, "沒有槓桿資料")
+        return _style_leverage_figure(figure, yaxis_title="Leverage", showlegend=False)
+    dates = pd.to_datetime(curve["date"])
+    figure.add_trace(
+        go.Scatter(
+            x=dates,
+            y=curve["actual_leverage"],
+            mode="lines",
+            name="Actual",
+            line={"color": "#3f5f73", "width": 2.3},
+            hovertemplate=(
+                f"{escape(scenario_label)}<br>%{{x|%Y-%m-%d}}"
+                "<br>actual: %{y:.2f}x<extra></extra>"
+            ),
+            showlegend=False,
+        )
+    )
+    if "target_leverage" in curve.columns:
+        figure.add_trace(
+            go.Scatter(
+                x=dates,
+                y=curve["target_leverage"],
+                mode="lines",
+                name="Target",
+                line={"color": "#b66f52", "width": 1.8, "dash": "dash"},
+                hovertemplate=(
+                    f"{escape(scenario_label)}<br>%{{x|%Y-%m-%d}}"
+                    "<br>target: %{y:.2f}x<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+    return _style_leverage_figure(figure, yaxis_title="Leverage", showlegend=False)
 
 
 def _build_leverage_equity_figure(curves: pd.DataFrame) -> Any:
@@ -1800,11 +2132,19 @@ def _build_leverage_contribution_figure(metrics: pd.DataFrame) -> Any:
     return _style_leverage_figure(figure, yaxis_title="USD")
 
 
-def _build_normalized_leverage_figure(curves: pd.DataFrame) -> Any:
+def _build_normalized_leverage_figure(
+    curves: pd.DataFrame,
+    *,
+    strategies: list[str],
+    preferred_ticker: str,
+) -> Any:
     figure = go.Figure()
     has_trace = False
-    color_map = _leverage_color_map(curves)
-    for key, group in _iter_curve_groups(curves):
+    family = _filter_strategies(curves, strategies)
+    if not family.empty and preferred_ticker in set(family["ticker"].astype(str)):
+        family = family[family["ticker"].astype(str) == preferred_ticker].copy()
+    color_map = _leverage_color_map(family)
+    for key, group in _iter_curve_groups(family):
         if "total_equity" not in group.columns:
             continue
         values = group["total_equity"].astype(float).replace([np.inf, -np.inf], np.nan)
@@ -1830,7 +2170,12 @@ def _build_normalized_leverage_figure(curves: pd.DataFrame) -> Any:
         )
     if not has_trace:
         _add_empty_annotation(figure, "沒有可標準化的權益資料")
-    return _style_leverage_figure(figure, yaxis_title="Normalized USD")
+    return _style_leverage_figure(
+        figure,
+        yaxis_title="Normalized USD",
+        showlegend=True,
+        height=320,
+    )
 
 
 def _render_chart_card(
@@ -1872,7 +2217,13 @@ def _html_table(df: pd.DataFrame, columns: list[tuple[str, str]]) -> str:
 </div>"""
 
 
-def _style_leverage_figure(figure: Any, *, yaxis_title: str) -> Any:
+def _style_leverage_figure(
+    figure: Any,
+    *,
+    yaxis_title: str,
+    showlegend: bool = False,
+    height: int = 340,
+) -> Any:
     figure.update_layout(
         template="plotly_white",
         paper_bgcolor="#ffffff",
@@ -1882,9 +2233,10 @@ def _style_leverage_figure(figure: Any, *, yaxis_title: str) -> Any:
             "color": "#202521",
             "size": 12,
         },
-        height=380,
+        height=height,
         margin={"l": 60, "r": 36, "t": 28, "b": 56},
         hovermode="x unified",
+        showlegend=showlegend,
         legend={
             "orientation": "h",
             "yanchor": "bottom",
@@ -1944,6 +2296,92 @@ def _filter_strategies(frame: pd.DataFrame, strategies: list[str]) -> pd.DataFra
     if frame.empty or "strategy" not in frame.columns:
         return frame.copy()
     return frame[frame["strategy"].isin(strategies)].copy()
+
+
+def _curve_for_scenario(
+    curves: pd.DataFrame,
+    *,
+    ticker: str,
+    strategy: str,
+    dividend_mode: str,
+) -> pd.DataFrame:
+    if curves.empty:
+        return curves.copy()
+    mask = (
+        (curves["ticker"].astype(str) == ticker)
+        & (curves["strategy"].astype(str) == strategy)
+        & (curves["dividend_mode"].astype(str) == dividend_mode)
+    )
+    return curves[mask].copy()
+
+
+def _policy_for_scenario(
+    policy: pd.DataFrame,
+    *,
+    ticker: str,
+    strategy: str,
+    dividend_mode: str,
+) -> pd.DataFrame:
+    if policy.empty:
+        return policy.copy()
+    mask = (
+        (policy["ticker"].astype(str) == ticker)
+        & (policy["strategy"].astype(str) == strategy)
+        & (policy["dividend_mode"].astype(str) == dividend_mode)
+    )
+    return policy[mask].copy()
+
+
+def _default_scenario_key(metrics: pd.DataFrame, *, focus: str) -> str:
+    if metrics.empty:
+        return ""
+    priorities = {
+        "risk": [
+            ("SPY_QQQ", "dynamic_rebalance_leveraged", "cash"),
+            ("SPY_QQQ", "rebalance_leveraged", "cash"),
+        ],
+        "rebalance": [
+            ("SPY_QQQ", "dynamic_rebalance_leveraged", "cash"),
+            ("SPY_QQQ", "rebalance_leveraged", "cash"),
+        ],
+        "dca": [
+            ("SPY", "dynamic_dca_leveraged", "cash"),
+            ("SPY", "dca_leveraged", "cash"),
+        ],
+        "buy_hold": [
+            ("SPY", "dynamic_buy_hold_leveraged", "cash"),
+            ("SPY", "buy_hold_leveraged", "cash"),
+        ],
+    }
+    for ticker, strategy, mode in priorities.get(focus, []):
+        match = metrics[
+            (metrics["ticker"].astype(str) == ticker)
+            & (metrics["strategy"].astype(str) == strategy)
+            & (metrics["dividend_mode"].astype(str) == mode)
+        ]
+        if not match.empty:
+            return _scenario_key(ticker, strategy, mode)
+    first = metrics.iloc[0]
+    return _scenario_key(first["ticker"], first["strategy"], first["dividend_mode"])
+
+
+def _scenario_key(ticker: Any, strategy: Any, mode: Any) -> str:
+    raw = f"{ticker}__{strategy}__{mode}"
+    return "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-")
+
+
+def _scenario_button_title(row: Any) -> str:
+    return (
+        f"{row.ticker} · {_strategy_short(str(row.strategy))} · "
+        f"{_mode_short(str(row.dividend_mode))}"
+    )
+
+
+def _scenario_button_subtitle(row: Any) -> str:
+    return (
+        f"ending {_format_money(row.ending_equity_usd)} USD · "
+        f"safety {_format_percent(row.worst_safety_buffer)}"
+    )
 
 
 def _scenario_id(ticker: str, strategy: str, mode: str) -> str:
@@ -2022,6 +2460,31 @@ def _format_leverage(value: Any) -> str:
     if pd.isna(value):
         return ""
     return f"{float(value):.2f}x"
+
+
+def _scenario_switcher_script() -> str:
+    return """<script>
+document.querySelectorAll("[data-scenario-button]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const group = button.dataset.scenarioGroup;
+    const scenario = button.dataset.scenarioButton;
+    document
+      .querySelectorAll(`[data-scenario-button][data-scenario-group="${group}"]`)
+      .forEach((item) => item.classList.toggle("is-active", item === button));
+    document
+      .querySelectorAll(`[data-scenario-panel][data-scenario-group="${group}"]`)
+      .forEach((panel) => {
+        const active = panel.dataset.scenarioPanel === scenario;
+        panel.classList.toggle("is-active", active);
+        if (active && window.Plotly) {
+          panel.querySelectorAll(".js-plotly-plot").forEach((plot) => {
+            window.Plotly.Plots.resize(plot);
+          });
+        }
+      });
+  });
+});
+</script>"""
 
 
 def _leverage_dashboard_css() -> str:
@@ -2254,6 +2717,118 @@ body {
   margin-bottom: 14px;
 }
 
+.scenario-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.scenario-button {
+  min-height: 68px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfbf7;
+  color: var(--ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.scenario-button:hover,
+.scenario-button.is-active {
+  border-color: var(--indigo);
+  background: #f1f5f2;
+}
+
+.scenario-button span,
+.scenario-button small {
+  display: block;
+}
+
+.scenario-button span {
+  font-weight: 700;
+}
+
+.scenario-button small {
+  margin-top: 4px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.scenario-panel {
+  display: none;
+}
+
+.scenario-panel.is-active {
+  display: block;
+}
+
+.scenario-summary {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  gap: 14px;
+  align-items: start;
+  margin: 12px 0 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfbf7;
+}
+
+.scenario-summary h3 {
+  margin: 4px 0 0;
+  font-size: 1.1rem;
+}
+
+.mini-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mini-stat {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.mini-stat span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.mini-stat strong {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+.compact-kpi-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.compact-kpi strong {
+  font-size: clamp(1.05rem, 1.7vw, 1.35rem);
+}
+
+.chart-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.chart-grid.two-up {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.chart-grid.three-up {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .filter-row span,
 .download-link {
   display: inline-flex;
@@ -2361,7 +2936,12 @@ td:first-child {
 
   .nav-grid,
   .settings-grid,
-  .kpi-grid {
+  .kpi-grid,
+  .mini-stat-grid,
+  .compact-kpi-grid,
+  .chart-grid.two-up,
+  .chart-grid.three-up,
+  .scenario-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -2379,7 +2959,12 @@ td:first-child {
 
   .nav-grid,
   .settings-grid,
-  .kpi-grid {
+  .kpi-grid,
+  .mini-stat-grid,
+  .compact-kpi-grid,
+  .chart-grid.two-up,
+  .chart-grid.three-up,
+  .scenario-summary {
     grid-template-columns: 1fr;
   }
 

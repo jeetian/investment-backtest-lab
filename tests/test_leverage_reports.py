@@ -78,7 +78,16 @@ def test_leverage_report_exports_margin_risk_outputs(tmp_path):
     assert "DCA 定期投入" in html
     assert "再平衡" in html
     assert "槓桿風險" in html
+    assert "scenario-selector" in html
+    assert "data-scenario-panel" in html
+    assert '"showlegend":false' in html
     assert "標準化比較" in html
+    assert "B&amp;H 標準化路徑" in html
+    assert "DCA 標準化路徑" in html
+    assert "再平衡標準化路徑" in html
+    assert "Debt 負債" in html
+    assert "Safety Buffer 安全緩衝" in html
+    assert "目標槓桿 vs 實際槓桿" in html
     assert "非實際投入結果，不可當作本金報酬排名" in html
     assert "Audit 明細與 CSV 下載" in html
     assert "policy CSV" in html

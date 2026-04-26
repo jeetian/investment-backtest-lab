@@ -1270,14 +1270,6 @@ def _render_family_charts(
                 _build_drawdown_figure(go, equity, color_map),
             )
         )
-    else:
-        chart_specs.append(
-            (
-                "現金與持股市值",
-                "檢查每期投入、股息留存與再投入造成的現金變化。",
-                _build_cash_market_figure(go, equity, color_map),
-            )
-        )
     if focus == "rebalance":
         chart_specs.append(
             (
@@ -1348,12 +1340,19 @@ def _render_rebalance_audit_preview(rebalance: pd.DataFrame) -> str:
 def _render_ledger_normalized_section(equity: pd.DataFrame) -> str:
     import plotly.graph_objects as go
 
-    figure = _build_normalized_equity_figure(go, equity)
-    chart = _render_chart_article(
-        "normalized-equity",
-        "10,000 USD 標準化權益曲線",
-        "所有線都從 10,000 開始，僅比較路徑形狀、波動和回撤，不代表實際投入結果。",
-        figure,
+    chart_specs = [
+        ("normalized-ledger-bh", "B&H 標準化路徑", "ledger_buy_and_hold"),
+        ("normalized-ledger-dca", "DCA 標準化路徑", "ledger_dca"),
+        ("normalized-ledger-rebalance", "再平衡標準化路徑", "ledger_rebalance"),
+    ]
+    charts = "\n".join(
+        _render_chart_article(
+            chart_id,
+            title,
+            "每張圖最多四條線，只比較同一策略族群內的路徑形狀。",
+            _build_normalized_equity_figure(go, equity, strategy=strategy),
+        )
+        for chart_id, title, strategy in chart_specs
     )
     return f"""<section class="section-block" id="view-normalized">
   <div class="section-heading">
@@ -1367,15 +1366,16 @@ def _render_ledger_normalized_section(equity: pd.DataFrame) -> str:
     <strong>非實際投入結果，不可當作本金報酬排名。</strong>
     <p>標準化曲線只回答「哪條路徑比較抖、回撤比較深、復原比較慢」。實際績效請回到各策略族群閱讀。</p>
   </div>
-  {chart}
+  <div class="chart-grid three-up">{charts}</div>
 </section>"""
 
 
-def _build_normalized_equity_figure(go: Any, equity: pd.DataFrame) -> Any:
+def _build_normalized_equity_figure(go: Any, equity: pd.DataFrame, *, strategy: str) -> Any:
     figure = go.Figure()
     has_trace = False
-    color_map = _scenario_color_map(equity)
-    for key, group in _iter_equity_groups(equity):
+    family = _filter_strategy(equity, strategy)
+    color_map = _scenario_color_map(family)
+    for key, group in _iter_equity_groups(family):
         if "total_equity" not in group.columns:
             continue
         values = group["total_equity"].astype(float).replace([np.inf, -np.inf], np.nan)
@@ -2673,6 +2673,15 @@ body {
   background: #fff8f3;
 }
 
+.chart-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.chart-grid.three-up {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .chart-card {
   margin-top: 14px;
   padding: 18px;
@@ -2775,7 +2784,8 @@ td {
 
   .settings-grid,
   .kpi-grid,
-  .nav-grid {
+  .nav-grid,
+  .chart-grid.three-up {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -2793,7 +2803,8 @@ td {
 
   .settings-grid,
   .kpi-grid,
-  .nav-grid {
+  .nav-grid,
+  .chart-grid.three-up {
     grid-template-columns: 1fr;
   }
 
