@@ -119,8 +119,6 @@ uv sync --extra dev
 
 目前未設定 `FINMIND_TOKEN`，所以 `0050`、`2330` 尚未測 live data。
 
-## 7. 排錯順序
-
 ## 7. Ledger 報表驗證
 
 ```powershell
@@ -151,7 +149,24 @@ uv sync --extra dev
 - rebalance CSV 要能看到每次再平衡的交易數、買賣方向、調整後最大偏離與買賣原因。
 - HTML 要能打開並看到中文 dashboard shell、設定總覽、KPI、情境表、再平衡讀法、TWD/USD equity curve、drawdown、cash/market value、股息/稅/費用圖、權重漂移圖與 CSV 下載連結。
 
-## 8. 排錯順序
+## 8. Cross-Tool Validation
+
+```powershell
+.\.venv\Scripts\python.exe scripts\cross_validate.py
+```
+
+預期輸出：
+
+- `reports/cross_validation.csv`
+- `reports/cross_validation.md`
+
+驗證重點：
+
+- `buy_hold_price_only` 會用合成 SPY 價格，比對 AccountLedger 與 vectorbt 的期末資產。
+- `monthly_rebalance_price_only` 會用合成 SPY/QQQ 價格，比對 PortfolioLedger 與 bt 的 60/40 月再平衡總報酬。
+- 這組驗證刻意排除股息、稅、費用與匯率，讓問題只剩下核心交易與再平衡數學。
+
+## 9. 排錯順序
 
 若驗證失敗，建議順序：
 

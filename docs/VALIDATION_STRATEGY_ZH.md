@@ -1,72 +1,92 @@
-# 正確性驗證策略
+# 回測正確性驗證策略
 
-本專案的驗證分成 L1、L2、L3。原則是先驗證資料與現金流，再驗證框架結果。
+本專案的驗證分成 L1、L2、L3。原則是先驗證資料與現金流，再驗證策略與框架結果。Ledger 是可審計主線，`vectorbt`、`bt`、`quantstats` 主要作為研究與交叉驗證工具。
 
 ## L1：資料品質驗證
 
-目的：確認輸入資料沒有明顯錯誤。
+目的：確認輸入資料本身可以被信任。
 
 檢查項目：
 
-- 日期範圍是否符合 config。
-- 是否有缺值。
-- 是否有重複日期。
-- 價格是否小於等於零。
-- 是否有異常大漲跌。
-- 是否有足夠資料計算策略需要的 window。
-- cache 檔案是否可重複讀取。
-- 匯率資料是否可對齊交易日。
+- 日期是否可解析並排序。
+- 價格欄位是否齊全：open、high、low、close、volume。
+- close 是否缺值、重複日期、非正數。
+- 是否有異常大幅跳動。
+- cache 是否可重讀。
+- FX 日期是否能與資產價格對齊。
 
-L1 失敗時，報表要明確顯示警告，不可以默默輸出誤導結果。
+L1 主要避免「資料壞掉卻跑出漂亮報表」。
 
-## L2：Golden Case 驗證
+## L2：Golden Case 手算驗證
 
-目的：用人工可手算的小案例驗證核心邏輯。
+目的：用非常小、可以手算的案例確認 ledger 現金流。
 
-必備案例：
+目前重點：
 
-- 買進 10 股，價格上漲後 `cash + market value = total equity`。
-- 賣出時計算現金、持股、費用與稅。
-- 現金股息入帳時計算 gross dividend、withholding tax、net cash。
-- 股息再投入時計算新買入股數與剩餘現金。
-- DCA 在每月第一個可交易日投入。
-- FX 換算能對齊日期並保留原幣結果。
+- 買進、賣出、費用、稅、現金與持股正確。
+- 股息現金入帳：gross dividend、withholding tax、net cash 正確。
+- 股息再投入：扣稅後新增股數正確。
+- DCA 每期投入、買入、費用與期末資產正確。
+- 再平衡會先賣超配，再買低配，且不超買。
+- 每日 snapshot 滿足 `cash + market value = total equity`。
+- TWD 換算使用對齊後的 USD/TWD 匯率。
 
-Golden case 應該小到可以用人眼檢查，不依賴外部資料來源。
+Golden case 是本專案最重要的防線。只要 ledger 行為有變，應優先補 golden tests。
 
-## L3：Cross-tool Validation
+## L3：Cross-Tool Validation
 
-目的：用不同工具或不同實作互相校驗。
+目的：用不同工具或不同實作互相校驗，降低「自己寫錯但測試也跟著錯」的風險。
 
-候選方式：
+目前已落地：
 
-- Account ledger 手算結果 vs `vectorbt`。
-- 配置再平衡結果 vs `bt`。
-- 報酬與 drawdown 指標 vs `quantstats`。
-- yfinance adjusted price vs 明確股息再投入流程。
+```powershell
+uv run python scripts\cross_validate.py
+```
 
-L3 不要求一開始完整完成，但每當核心邏輯變複雜，例如槓桿、台股除權息、基金配息，就應該補上代表案例。
+第一批案例刻意使用 synthetic price-only、zero-fee、no-dividend：
 
-## 驗證命令
+- `buy_hold_price_only`：AccountLedger vs `vectorbt`，比對單資產 buy-and-hold 期末資產。
+- `monthly_rebalance_price_only`：PortfolioLedger vs `bt`，比對 SPY/QQQ 60/40 月再平衡總報酬。
 
-常用命令：
+這批案例不驗證資料品質、股息、稅、費用或匯率；那些由 L1/L2 與 ledger 報表測試處理。L3 的目的，是把核心交易與再平衡數學拿去和成熟框架對答案。
+
+後續擴充方向：
+
+- 報表輸出的 drawdown 指標 vs `quantstats`。
+- raw price + dividend reinvestment vs adjusted price 的近似檢查。
+- 槓桿策略與風險控制的簡化交叉案例。
+- 台股除權息與台灣基金配息接入後的代表案例。
+
+## 標準驗證命令
+
+常規開發至少跑：
 
 ```powershell
 uv run pytest
+uv run ruff check src tests scripts\analyze_ledger.py scripts\cross_validate.py
+```
+
+修改資料、報表或 CLI 時，加跑：
+
+```powershell
 uv run python scripts\smoke_imports.py
 uv run python scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
 uv run python scripts\analyze_results.py --config configs\mvp_example.yaml --tickers SPY QQQ
+uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+uv run python scripts\cross_validate.py
 ```
-
-新增功能時，至少要跑 `uv run pytest`。若修改資料或報表流程，還要跑 quickstart report。
 
 ## 報表驗證原則
 
-每份報表都要能回答：
+報表不是只看漂亮圖表，還要能追溯：
 
-- 用了哪些資料來源。
-- 日期範圍是什麼。
-- 策略如何解讀。
-- 結果是原幣還是 TWD。
-- 成本、稅與匯率如何處理。
-- 哪些地方目前只是 prototype 限制。
+- 資料來源與日期範圍。
+- 策略、股息模式、成本、稅率與基準幣別。
+- trades、dividends、cash flows、equity、positions、rebalance CSV。
+- 重要限制，例如 yfinance dividend date、fractional shares、raw/adjusted price 假設。
+
+每個新增功能都應該能回答三個問題：
+
+- 數字從哪裡來？
+- 是否能用小案例手算？
+- 是否能用另一個工具或簡化模型交叉檢查？

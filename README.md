@@ -18,6 +18,7 @@ uv run pytest
 uv run python scripts\smoke_imports.py
 uv run python scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
 uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+uv run python scripts\cross_validate.py
 ```
 
 ## 目前狀態
@@ -45,6 +46,7 @@ uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tick
 .\.venv\Scripts\python.exe scripts\smoke_imports.py
 .\.venv\Scripts\python.exe scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
 .\.venv\Scripts\python.exe scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+.\.venv\Scripts\python.exe scripts\cross_validate.py
 ```
 
 預期結果：
@@ -53,6 +55,7 @@ uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tick
 - `smoke_imports.py`: `pandas`、`vectorbt`、`bt`、`quantstats`、`yfinance`、`FinMind` 都顯示 `[OK]`
 - `run_prototype.py`: 會輸出均線策略摘要、DCA 摘要、Rolling 3Y CAGR
 - `analyze_ledger.py`: 會輸出 raw price + 股息 + 稅 + 成本 + DCA 現金流 + SPY/QQQ 再平衡的可審計 ledger 報表
+- `cross_validate.py`: 會用 synthetic price-only 案例比對 ledger vs `vectorbt` / `bt`
 
 ## 專案目標
 
@@ -110,6 +113,7 @@ uv sync --extra dev
 .\.venv\Scripts\python.exe scripts\smoke_imports.py
 .\.venv\Scripts\python.exe scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
 .\.venv\Scripts\python.exe scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+.\.venv\Scripts\python.exe scripts\cross_validate.py
 ```
 
 ## FinMind Token
