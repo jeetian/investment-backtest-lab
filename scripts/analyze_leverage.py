@@ -19,6 +19,7 @@ from investment_backtest_lab.models import (
     AssetSpec,
     AssetType,
     DataSource,
+    DividendMode,
     LeverageKind,
     Market,
 )
@@ -41,6 +42,12 @@ def main() -> None:
             "dca_leveraged",
             "rebalance_leveraged",
         ],
+    )
+    parser.add_argument(
+        "--dividend-modes",
+        nargs="+",
+        default=[DividendMode.CASH.value, DividendMode.REINVEST.value],
+        choices=[mode.value for mode in DividendMode],
     )
     args = parser.parse_args()
 
@@ -76,40 +83,61 @@ def main() -> None:
         )
         for asset in selected_assets
     ]
+    dividend_frames = [
+        loader.load_dividends(
+            asset,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        for asset in selected_assets
+    ]
 
     results = []
-    for price_frame in price_frames:
-        if "buy_hold_leveraged" in normalized_strategies:
+    for dividend_mode in args.dividend_modes:
+        for price_frame, dividend_frame in zip(price_frames, dividend_frames, strict=True):
+            if "buy_hold_leveraged" in normalized_strategies:
+                results.append(
+                    run_buy_hold_leveraged(
+                        price_frame=price_frame,
+                        dividend_frame=dividend_frame,
+                        cost_model=cost_model,
+                        initial_cash=config.ledger.initial_cash,
+                        leverage=config.leverage,
+                        dividend_mode=dividend_mode,
+                        withholding_rate=config.tax.us.dividend_withholding_rate,
+                    )
+                )
+            if "dca_leveraged" in normalized_strategies:
+                results.append(
+                    run_dca_leveraged(
+                        price_frame=price_frame,
+                        dividend_frame=dividend_frame,
+                        cost_model=cost_model,
+                        contribution=config.dca.contribution,
+                        frequency=config.dca.frequency,
+                        leverage=config.leverage,
+                        dividend_mode=dividend_mode,
+                        withholding_rate=config.tax.us.dividend_withholding_rate,
+                    )
+                )
+        if "rebalance_leveraged" in normalized_strategies:
+            target_weights = selected_target_weights(
+                config.rebalance.target_weights,
+                selected_assets,
+            )
             results.append(
-                run_buy_hold_leveraged(
-                    price_frame=price_frame,
+                run_rebalance_leveraged(
+                    price_frames=price_frames,
+                    dividend_frames=dividend_frames,
                     cost_model=cost_model,
                     initial_cash=config.ledger.initial_cash,
+                    target_weights=target_weights,
+                    frequency=config.rebalance.frequency,
                     leverage=config.leverage,
+                    dividend_mode=dividend_mode,
+                    withholding_rate=config.tax.us.dividend_withholding_rate,
                 )
             )
-        if "dca_leveraged" in normalized_strategies:
-            results.append(
-                run_dca_leveraged(
-                    price_frame=price_frame,
-                    cost_model=cost_model,
-                    contribution=config.dca.contribution,
-                    frequency=config.dca.frequency,
-                    leverage=config.leverage,
-                )
-            )
-    if "rebalance_leveraged" in normalized_strategies:
-        target_weights = selected_target_weights(config.rebalance.target_weights, selected_assets)
-        results.append(
-            run_rebalance_leveraged(
-                price_frames=price_frames,
-                cost_model=cost_model,
-                initial_cash=config.ledger.initial_cash,
-                target_weights=target_weights,
-                frequency=config.rebalance.frequency,
-                leverage=config.leverage,
-            )
-        )
 
     slug = "_".join(ticker.lower().replace("/", "_").replace("=", "_") for ticker in args.tickers)
     report = write_leverage_report(
@@ -119,13 +147,19 @@ def main() -> None:
         base_currency=config.ledger.base_currency,
         usd_twd=usd_twd,
         config_path=Path(args.config),
-        report_context=build_report_context(config, selected_assets, normalized_strategies),
+        report_context=build_report_context(
+            config,
+            selected_assets,
+            normalized_strategies,
+            args.dividend_modes,
+        ),
     )
     print_terminal_summary(report.metrics, report.warnings)
     print(f"Markdown report: {report.markdown_path}")
     print(f"Metrics CSV:     {report.metrics_path}")
     print(f"Trades CSV:      {report.trades_path}")
     print(f"Interest CSV:    {report.interest_path}")
+    print(f"Dividends CSV:   {report.dividends_path}")
     print(f"Events CSV:      {report.events_path}")
     print(f"Cash flows CSV:  {report.cash_flows_path}")
     print(f"Curve CSV:       {report.curves_path}")
@@ -149,12 +183,14 @@ def build_report_context(
     config: Any,
     selected_assets: list[AssetSpec],
     strategies: list[str],
+    dividend_modes: list[str],
 ) -> dict[str, Any]:
     return {
         "start_date": config.start_date.isoformat(),
         "end_date": config.end_date.isoformat(),
         "tickers": [asset.ticker for asset in selected_assets],
         "strategies": strategies,
+        "dividend_modes": dividend_modes,
         "target_leverage": f"{config.leverage.target_leverage:.2f}x",
         "max_leverage": f"{config.leverage.max_leverage:.2f}x",
         "annual_borrow_rate": f"{config.leverage.annual_borrow_rate:.2%}",
@@ -234,10 +270,13 @@ def print_terminal_summary(metrics: pd.DataFrame, warnings: list[str]) -> None:
         [
             "ticker",
             "strategy",
+            "dividend_mode",
             "ending_equity_usd",
             "simple_cash_return",
             "max_drawdown",
             "interest_paid",
+            "gross_dividends",
+            "withholding_tax",
             "final_debt",
             "max_actual_leverage",
             "worst_safety_buffer",
@@ -250,6 +289,8 @@ def print_terminal_summary(metrics: pd.DataFrame, warnings: list[str]) -> None:
     for column in [
         "ending_equity_usd",
         "interest_paid",
+        "gross_dividends",
+        "withholding_tax",
         "final_debt",
         "max_actual_leverage",
     ]:

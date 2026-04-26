@@ -31,6 +31,7 @@ L1 主要避免「資料壞掉卻跑出漂亮報表」。
 - 每日 snapshot 滿足 `cash + market value = total equity`。
 - 槓桿 snapshot 滿足 `cash + market value - debt = total equity`。
 - margin loan 每日利息會降低 equity，並增加 debt。
+- 槓桿股息會以持股數計算 gross dividend，扣除 withholding tax 後增加 cash；reinvest 模式會用稅後股息買入更多股數且不額外借款。
 - `safety_buffer < min_safety_buffer` 時會自動降槓桿到 `deleverage_to`。
 - `equity_ratio <= maintenance_requirement` 時會記錄 margin call 與 forced deleverage。
 - TWD 換算使用對齊後的 USD/TWD 匯率。
@@ -91,6 +92,7 @@ uv run python scripts\cross_validate.py
 - 策略、股息模式、成本、稅率與基準幣別。
 - trades、dividends、cash flows、equity、positions、rebalance CSV。
 - 槓桿報表必須能看到 debt、interest、actual leverage、equity ratio、safety buffer、margin events。
+- 槓桿報表必須能看到 gross dividends、withholding tax、dividend mode 與 dividend CSV。
 - 重要限制，例如 yfinance dividend date、fractional shares、raw/adjusted price 假設。
 
 每個新增功能都應該能回答三個問題：

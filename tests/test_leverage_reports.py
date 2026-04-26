@@ -6,6 +6,8 @@ from investment_backtest_lab.models import (
     AssetSpec,
     AssetType,
     DataSource,
+    DividendFrame,
+    DividendMode,
     LeverageConfig,
     Market,
     PriceFrame,
@@ -15,6 +17,7 @@ from investment_backtest_lab.models import (
 def test_leverage_report_exports_margin_risk_outputs(tmp_path):
     result = run_buy_hold_leveraged(
         price_frame=price_frame(),
+        dividend_frame=dividend_frame(),
         cost_model=zero_cost_model(),
         initial_cash=1_000,
         leverage=LeverageConfig(
@@ -26,6 +29,8 @@ def test_leverage_report_exports_margin_risk_outputs(tmp_path):
             min_safety_buffer=0.25,
             deleverage_to=1.1,
         ),
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
     )
     report = write_leverage_report(
         results=[result],
@@ -53,10 +58,14 @@ def test_leverage_report_exports_margin_risk_outputs(tmp_path):
     assert report.metrics_path.exists()
     assert report.trades_path.exists()
     assert report.interest_path.exists()
+    assert report.dividends_path.exists()
     assert report.events_path.exists()
     assert report.curves_path.exists()
     assert report.positions_path.exists()
     assert {"target_leverage", "interest_paid", "worst_safety_buffer"}.issubset(
+        report.metrics.columns
+    )
+    assert {"gross_dividends", "withholding_tax", "dividend_mode"}.issubset(
         report.metrics.columns
     )
     assert "buy_hold_leveraged" in report.html_path.read_text(encoding="utf-8")
@@ -78,6 +87,15 @@ def price_frame() -> PriceFrame:
     )
     asset = AssetSpec("SPY", Market.US, AssetType.ETF, "USD", DataSource.YFINANCE)
     return PriceFrame(asset=asset, data=data, adjusted=False, source="raw-test")
+
+
+def dividend_frame() -> DividendFrame:
+    asset = AssetSpec("SPY", Market.US, AssetType.ETF, "USD", DataSource.YFINANCE)
+    data = pd.DataFrame(
+        {"dividend_per_share": [1.0]},
+        index=pd.DatetimeIndex(["2024-01-03"], name="date"),
+    )
+    return DividendFrame(asset=asset, data=data, currency="USD", source="dividend-test")
 
 
 def zero_cost_model() -> CostModel:

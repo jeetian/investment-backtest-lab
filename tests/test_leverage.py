@@ -12,6 +12,8 @@ from investment_backtest_lab.models import (
     AssetSpec,
     AssetType,
     DataSource,
+    DividendFrame,
+    DividendMode,
     LeverageConfig,
     Market,
     PriceFrame,
@@ -82,6 +84,24 @@ def three_month_qqq_price_frame() -> PriceFrame:
     return PriceFrame(asset=qqq_asset(), data=data, adjusted=False, source="raw-test")
 
 
+def empty_dividend_frame(asset: AssetSpec | None = None) -> DividendFrame:
+    asset = spy_asset() if asset is None else asset
+    data = pd.DataFrame(
+        {"dividend_per_share": pd.Series(dtype="float64")},
+        index=pd.DatetimeIndex([], name="date"),
+    )
+    return DividendFrame(asset=asset, data=data, currency="USD", source="empty-test")
+
+
+def single_dividend_frame(asset: AssetSpec | None = None) -> DividendFrame:
+    asset = spy_asset() if asset is None else asset
+    data = pd.DataFrame(
+        {"dividend_per_share": [1.0]},
+        index=pd.DatetimeIndex(["2024-01-03"], name="date"),
+    )
+    return DividendFrame(asset=asset, data=data, currency="USD", source="dividend-test")
+
+
 def initialized_ledger(**config_overrides) -> MarginLoanLedger:
     ledger = MarginLoanLedger(
         spy_asset(),
@@ -115,6 +135,45 @@ def test_daily_margin_interest_lowers_equity():
     assert interest == pytest.approx(0.3)
     assert ledger.debt == pytest.approx(300.3)
     assert snapshot.total_equity == pytest.approx(999.7)
+
+
+def test_margin_cash_dividend_adds_after_tax_cash_and_equity():
+    ledger = initialized_ledger()
+
+    dividend = ledger.cash_dividend(
+        "2024-01-03",
+        dividend_per_share=1.0,
+        withholding_rate=0.30,
+        reinvest=False,
+    )
+    snapshot = ledger.snapshot("2024-01-03", price=100)
+
+    assert dividend is not None
+    assert dividend.gross_amount == pytest.approx(13)
+    assert dividend.withholding_tax == pytest.approx(3.9)
+    assert dividend.net_amount == pytest.approx(9.1)
+    assert ledger.cash == pytest.approx(9.1)
+    assert snapshot.total_equity == pytest.approx(1_009.1)
+
+
+def test_margin_reinvest_dividend_increases_shares_without_new_debt():
+    ledger = initialized_ledger()
+
+    dividend = ledger.cash_dividend(
+        "2024-01-03",
+        dividend_per_share=1.0,
+        withholding_rate=0.30,
+        reinvest=True,
+        price=100,
+    )
+    snapshot = ledger.snapshot("2024-01-03", price=100)
+
+    assert dividend is not None
+    assert dividend.reinvested_quantity == pytest.approx(0.091)
+    assert ledger.quantity == pytest.approx(13.091)
+    assert ledger.debt == pytest.approx(300)
+    assert ledger.cash == pytest.approx(0)
+    assert snapshot.total_equity == pytest.approx(1_009.1)
 
 
 def test_price_down_with_enough_safety_buffer_does_not_deleverage():
@@ -155,9 +214,12 @@ def test_margin_call_records_forced_deleverage():
 def test_snapshot_equity_identity_holds_every_day():
     result = run_buy_hold_leveraged(
         price_frame=flat_price_frame(),
+        dividend_frame=empty_dividend_frame(),
         cost_model=zero_cost_model(),
         initial_cash=1_000,
         leverage=leverage_config(),
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
     )
 
     curve = result.equity_curve
@@ -168,6 +230,7 @@ def test_snapshot_equity_identity_holds_every_day():
 def test_one_times_leverage_matches_unleveraged_price_path():
     result = run_buy_hold_leveraged(
         price_frame=flat_price_frame(),
+        dividend_frame=empty_dividend_frame(),
         cost_model=zero_cost_model(),
         initial_cash=1_000,
         leverage=leverage_config(
@@ -175,6 +238,8 @@ def test_one_times_leverage_matches_unleveraged_price_path():
             max_leverage=1.0,
             deleverage_to=1.0,
         ),
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
     )
 
     assert result.ledger.debt == pytest.approx(0)
@@ -185,10 +250,13 @@ def test_one_times_leverage_matches_unleveraged_price_path():
 def test_dca_leveraged_records_contributions_and_target_debt():
     result = run_dca_leveraged(
         price_frame=three_month_price_frame(),
+        dividend_frame=empty_dividend_frame(),
         cost_model=zero_cost_model(),
         contribution=1_000,
         frequency="MS",
         leverage=leverage_config(),
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
     )
 
     assert len(result.ledger.cash_flows) == 3
@@ -196,6 +264,22 @@ def test_dca_leveraged_records_contributions_and_target_debt():
     assert result.ledger.quantity == pytest.approx(39)
     assert result.ledger.debt == pytest.approx(900)
     assert result.equity_curve.iloc[-1]["total_equity"] == pytest.approx(3_000)
+
+
+def test_buy_hold_leveraged_runner_applies_dividends():
+    result = run_buy_hold_leveraged(
+        price_frame=flat_price_frame(),
+        dividend_frame=single_dividend_frame(),
+        cost_model=zero_cost_model(),
+        initial_cash=1_000,
+        leverage=leverage_config(),
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
+    )
+
+    assert result.ledger.total_gross_dividends == pytest.approx(13)
+    assert result.ledger.total_withholding_tax == pytest.approx(3.9)
+    assert result.equity_curve.iloc[-1]["total_equity"] == pytest.approx(1_009.1)
 
 
 def test_portfolio_margin_initial_rebalance_allocates_target_weights():
@@ -223,6 +307,35 @@ def test_portfolio_margin_initial_rebalance_allocates_target_weights():
     latest = positions[positions["date"] == "2024-01-02"]
     assert latest.set_index("asset").loc["SPY", "weight"] == pytest.approx(0.60)
     assert latest.set_index("asset").loc["QQQ", "weight"] == pytest.approx(0.40)
+
+
+def test_portfolio_margin_cash_dividend_records_tax_and_cash():
+    ledger = PortfolioMarginLedger(
+        [spy_asset(), qqq_asset()],
+        starting_cash=10_000,
+        leverage=leverage_config(),
+        cost_model=zero_cost_model(),
+        portfolio_label="SPY_QQQ",
+    )
+    ledger.rebalance_to_weights(
+        "2024-01-02",
+        prices={"SPY": 100, "QQQ": 50},
+        target_weights={"SPY": 0.60, "QQQ": 0.40},
+        target_leverage=1.3,
+    )
+
+    dividend = ledger.cash_dividend(
+        "2024-01-03",
+        ticker="SPY",
+        dividend_per_share=1.0,
+        withholding_rate=0.30,
+        reinvest=False,
+    )
+
+    assert dividend is not None
+    assert dividend.gross_amount == pytest.approx(78)
+    assert dividend.withholding_tax == pytest.approx(23.4)
+    assert ledger.cash == pytest.approx(54.6)
 
 
 def test_portfolio_margin_rebalance_sells_overweight_asset():
@@ -258,11 +371,14 @@ def test_portfolio_margin_rebalance_sells_overweight_asset():
 def test_rebalance_leveraged_runner_outputs_portfolio_curve():
     result = run_rebalance_leveraged(
         price_frames=[three_month_price_frame(), three_month_qqq_price_frame()],
+        dividend_frames=[empty_dividend_frame(), empty_dividend_frame(qqq_asset())],
         cost_model=zero_cost_model(),
         initial_cash=10_000,
         target_weights={"SPY": 0.60, "QQQ": 0.40},
         frequency="monthly",
         leverage=leverage_config(),
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
     )
 
     assert result.strategy == "rebalance_leveraged"

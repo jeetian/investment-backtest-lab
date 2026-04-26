@@ -59,6 +59,22 @@ class LeverageCashFlowEvent:
 
 
 @dataclass(frozen=True)
+class LeverageDividendEvent:
+    date: pd.Timestamp
+    asset: str
+    shares: float
+    dividend_per_share: float
+    gross_amount: float
+    withholding_tax: float
+    net_amount: float
+    cash_amount: float
+    currency: str
+    reinvested_quantity: float = 0.0
+    reinvest_price: float | None = None
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class LeverageEvent:
     date: pd.Timestamp
     asset: str
@@ -130,6 +146,7 @@ class MarginLoanLedger:
         self._trades: list[LeverageTradeEvent] = []
         self._interest: list[LeverageInterestEvent] = []
         self._cash_flows: list[LeverageCashFlowEvent] = []
+        self._dividends: list[LeverageDividendEvent] = []
         self._events: list[LeverageEvent] = []
         self._snapshots: list[LeverageSnapshot] = []
 
@@ -144,6 +161,10 @@ class MarginLoanLedger:
     @property
     def cash_flows(self) -> pd.DataFrame:
         return _events_to_frame(self._cash_flows)
+
+    @property
+    def dividends(self) -> pd.DataFrame:
+        return _events_to_frame(self._dividends)
 
     @property
     def leverage_events(self) -> pd.DataFrame:
@@ -205,6 +226,14 @@ class MarginLoanLedger:
     @property
     def total_fees_paid(self) -> float:
         return float(sum(event.fees for event in self._trades))
+
+    @property
+    def total_gross_dividends(self) -> float:
+        return float(sum(event.gross_amount for event in self._dividends))
+
+    @property
+    def total_withholding_tax(self) -> float:
+        return float(sum(event.withholding_tax for event in self._dividends))
 
     def deposit(self, deposit_date: DateLike, *, amount: float, note: str = "") -> None:
         amount = _positive_float(amount, "amount")
@@ -294,6 +323,60 @@ class MarginLoanLedger:
         )
         self._interest.append(event)
         return amount
+
+    def cash_dividend(
+        self,
+        dividend_date: DateLike,
+        *,
+        dividend_per_share: float,
+        withholding_rate: float,
+        reinvest: bool = False,
+        price: float | None = None,
+        note: str = "",
+    ) -> LeverageDividendEvent | None:
+        dividend_per_share = _positive_float(dividend_per_share, "dividend_per_share")
+        withholding_rate = _withholding_rate(withholding_rate)
+        timestamp = _to_timestamp(dividend_date)
+        shares = self.quantity
+        if shares <= 0:
+            return None
+
+        gross_amount = shares * dividend_per_share
+        withholding_tax = gross_amount * withholding_rate
+        net_amount = gross_amount - withholding_tax
+        self.cash += net_amount
+        cash_amount = net_amount
+        reinvested_quantity = 0.0
+        reinvest_price: float | None = None
+
+        if reinvest:
+            if price is None:
+                raise ValueError("reinvest=True requires a reinvestment price.")
+            reinvest_price = _positive_float(price, "price")
+            reinvested_quantity = self._buy_with_cash_budget(
+                timestamp,
+                price=reinvest_price,
+                cash_budget=net_amount,
+                note="dividend reinvestment",
+            )
+            cash_amount = 0.0 if reinvested_quantity > 0 else net_amount
+
+        event = LeverageDividendEvent(
+            date=timestamp,
+            asset=self.asset.ticker,
+            shares=shares,
+            dividend_per_share=dividend_per_share,
+            gross_amount=gross_amount,
+            withholding_tax=withholding_tax,
+            net_amount=net_amount,
+            cash_amount=cash_amount,
+            currency=self.account_currency,
+            reinvested_quantity=reinvested_quantity,
+            reinvest_price=reinvest_price,
+            note=note,
+        )
+        self._dividends.append(event)
+        return event
 
     def check_margin_risk(self, check_date: DateLike, *, price: float) -> None:
         timestamp = _to_timestamp(check_date)
@@ -452,6 +535,50 @@ class MarginLoanLedger:
             )
         )
 
+    def _buy_with_cash_budget(
+        self,
+        trade_date: pd.Timestamp,
+        *,
+        price: float,
+        cash_budget: float,
+        note: str,
+    ) -> float:
+        cash_budget = min(_non_negative_float(cash_budget, "cash_budget"), max(0.0, self.cash))
+        if cash_budget <= 0:
+            return 0.0
+        high = cash_budget
+        low = 0.0
+        for _ in range(80):
+            mid = (low + high) / 2.0
+            if self._buy_cash_required(mid, price) <= cash_budget:
+                low = mid
+            else:
+                high = mid
+        notional = low
+        if notional <= 1e-12:
+            return 0.0
+        before_debt = self.debt
+        self._buy_notional(
+            trade_date,
+            price=price,
+            notional=notional,
+            forced=False,
+            note=note,
+        )
+        if self.debt > before_debt + 1e-9:
+            raise RuntimeError("Cash-budgeted buy unexpectedly drew margin debt.")
+        return notional / price
+
+    def _buy_cash_required(self, notional: float, price: float) -> float:
+        quantity = float(notional) / float(price)
+        costs = self.cost_model.estimate_trade(
+            self.asset,
+            side=TradeSide.BUY,
+            quantity=quantity,
+            price=price,
+        )
+        return float(notional) + costs.total
+
     def _sell_notional(
         self,
         trade_date: pd.Timestamp,
@@ -590,6 +717,7 @@ class PortfolioMarginLedger:
         self._trades: list[LeverageTradeEvent] = []
         self._interest: list[LeverageInterestEvent] = []
         self._cash_flows: list[LeverageCashFlowEvent] = []
+        self._dividends: list[LeverageDividendEvent] = []
         self._events: list[LeverageEvent] = []
         self._snapshots: list[LeverageSnapshot] = []
         self._position_snapshots: list[PortfolioLeveragePositionSnapshot] = []
@@ -605,6 +733,10 @@ class PortfolioMarginLedger:
     @property
     def cash_flows(self) -> pd.DataFrame:
         return _events_to_frame(self._cash_flows)
+
+    @property
+    def dividends(self) -> pd.DataFrame:
+        return _events_to_frame(self._dividends)
 
     @property
     def leverage_events(self) -> pd.DataFrame:
@@ -637,6 +769,14 @@ class PortfolioMarginLedger:
     @property
     def total_fees_paid(self) -> float:
         return float(sum(event.fees for event in self._trades))
+
+    @property
+    def total_gross_dividends(self) -> float:
+        return float(sum(event.gross_amount for event in self._dividends))
+
+    @property
+    def total_withholding_tax(self) -> float:
+        return float(sum(event.withholding_tax for event in self._dividends))
 
     def rebalance_to_weights(
         self,
@@ -706,6 +846,64 @@ class PortfolioMarginLedger:
             )
         )
         return amount
+
+    def cash_dividend(
+        self,
+        dividend_date: DateLike,
+        *,
+        ticker: str,
+        dividend_per_share: float,
+        withholding_rate: float,
+        reinvest: bool = False,
+        price: float | None = None,
+        note: str = "",
+    ) -> LeverageDividendEvent | None:
+        if ticker not in self.positions:
+            raise ValueError(f"Unknown portfolio asset: {ticker}")
+        dividend_per_share = _positive_float(dividend_per_share, "dividend_per_share")
+        withholding_rate = _withholding_rate(withholding_rate)
+        timestamp = _to_timestamp(dividend_date)
+        shares = self.positions[ticker]
+        if shares <= 0:
+            return None
+
+        gross_amount = shares * dividend_per_share
+        withholding_tax = gross_amount * withholding_rate
+        net_amount = gross_amount - withholding_tax
+        self.cash += net_amount
+        cash_amount = net_amount
+        reinvested_quantity = 0.0
+        reinvest_price: float | None = None
+
+        if reinvest:
+            if price is None:
+                raise ValueError("reinvest=True requires a reinvestment price.")
+            reinvest_price = _positive_float(price, "price")
+            reinvested_quantity = self._buy_asset_with_cash_budget(
+                timestamp,
+                ticker=ticker,
+                price=reinvest_price,
+                cash_budget=net_amount,
+                note="portfolio dividend reinvestment",
+            )
+            cash_amount = 0.0 if reinvested_quantity > 0 else net_amount
+
+        event = LeverageDividendEvent(
+            date=timestamp,
+            asset=ticker,
+            shares=shares,
+            dividend_per_share=dividend_per_share,
+            gross_amount=gross_amount,
+            withholding_tax=withholding_tax,
+            net_amount=net_amount,
+            cash_amount=cash_amount,
+            currency=self.account_currency,
+            reinvested_quantity=reinvested_quantity,
+            reinvest_price=reinvest_price,
+            note=note,
+        )
+        self._dividends.append(event)
+        return event
 
     def check_margin_risk(self, check_date: DateLike, *, prices: dict[str, float]) -> None:
         timestamp = _to_timestamp(check_date)
@@ -946,6 +1144,57 @@ class PortfolioMarginLedger:
             )
         )
 
+    def _buy_asset_with_cash_budget(
+        self,
+        trade_date: pd.Timestamp,
+        *,
+        ticker: str,
+        price: float,
+        cash_budget: float,
+        note: str,
+    ) -> float:
+        cash_budget = min(_non_negative_float(cash_budget, "cash_budget"), max(0.0, self.cash))
+        if cash_budget <= 0:
+            return 0.0
+        high = cash_budget
+        low = 0.0
+        for _ in range(80):
+            mid = (low + high) / 2.0
+            cash_required = self._buy_asset_cash_required(
+                ticker=ticker,
+                notional=mid,
+                price=price,
+            )
+            if cash_required <= cash_budget:
+                low = mid
+            else:
+                high = mid
+        notional = low
+        if notional <= 1e-12:
+            return 0.0
+        before_debt = self.debt
+        self._buy_asset_notional(
+            trade_date,
+            ticker=ticker,
+            price=price,
+            notional=notional,
+            forced=False,
+            note=note,
+        )
+        if self.debt > before_debt + 1e-9:
+            raise RuntimeError("Cash-budgeted portfolio buy unexpectedly drew margin debt.")
+        return notional / price
+
+    def _buy_asset_cash_required(self, *, ticker: str, notional: float, price: float) -> float:
+        quantity = float(notional) / float(price)
+        costs = self.cost_model.estimate_trade(
+            self._asset_map[ticker],
+            side=TradeSide.BUY,
+            quantity=quantity,
+            price=price,
+        )
+        return float(notional) + costs.total
+
     def _sell_asset_notional(
         self,
         trade_date: pd.Timestamp,
@@ -1170,8 +1419,23 @@ def _positive_float(value: float, name: str) -> float:
     return value
 
 
+def _non_negative_float(value: float, name: str) -> float:
+    value = float(value)
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative.")
+    return value
+
+
+def _withholding_rate(value: float) -> float:
+    value = float(value)
+    if not 0.0 <= value <= 1.0:
+        raise ValueError("withholding_rate must be between 0 and 1.")
+    return value
+
+
 __all__ = [
     "LeverageCashFlowEvent",
+    "LeverageDividendEvent",
     "LeverageEvent",
     "LeverageInterestEvent",
     "LeverageSnapshot",
