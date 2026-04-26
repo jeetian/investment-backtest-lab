@@ -859,15 +859,16 @@ def _render_ledger_dashboard_html(
     report_context: dict[str, Any],
 ) -> str:
     settings_html = _render_settings_overview(metrics, report_context, config_path)
-    kpi_html = _render_kpi_cards(preferred_metrics)
-    scenario_table = _render_metrics_html_table(preferred_metrics)
-    rebalance_html = _render_rebalance_section(rebalance)
-    chart_sections = _render_dashboard_charts(
+    navigation_html = _render_ledger_navigation()
+    family_sections = _render_ledger_family_sections(
         equity,
         positions,
         preferred_metrics,
+        cash_flows,
+        rebalance,
         report_context.get("target_weights", {}),
     )
+    normalized_section = _render_ledger_normalized_section(equity)
     audit_html = _render_audit_section(
         output_path=output_path,
         metrics_path=metrics_path,
@@ -901,6 +902,7 @@ def _render_ledger_dashboard_html(
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="{font_url}" rel="stylesheet">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <style>{style}</style>
 </head>
 <body>
@@ -931,47 +933,11 @@ def _render_ledger_dashboard_html(
       {settings_html}
     </section>
 
-    <section class="section-block" aria-labelledby="kpi-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Snapshot</p>
-          <h2 id="kpi-title">關鍵績效</h2>
-        </div>
-        <p>KPI 以主要報表幣別中「期末資產最高」的情境作為焦點；完整比較請看下方情境表。</p>
-      </div>
-      {kpi_html}
-    </section>
+    {navigation_html}
 
-    <section class="section-block" aria-labelledby="scenario-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Scenario Matrix</p>
-          <h2 id="scenario-title">策略與股息模式比較</h2>
-        </div>
-        <p>技術代號保留在表格裡：ledger_buy_and_hold、ledger_dca、cash、reinvest，方便對回 CSV。</p>
-      </div>
-      {scenario_table}
-    </section>
+    {family_sections}
 
-    {rebalance_html}
-
-    <section class="section-block" aria-labelledby="chart-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Charts</p>
-          <h2 id="chart-title">互動圖表</h2>
-        </div>
-        <p>圖例只保留短名稱；完整策略、模式與 ticker 會在 hover 提示與情境表中呈現。</p>
-      </div>
-      <div class="legend-guide">
-        <span><b>B&amp;H</b> = ledger_buy_and_hold</span>
-        <span><b>DCA</b> = ledger_dca</span>
-        <span><b>Rebal</b> = ledger_rebalance</span>
-        <span><b>現金</b> = cash</span>
-        <span><b>再投</b> = reinvest</span>
-      </div>
-      {chart_sections}
-    </section>
+    {normalized_section}
 
     {audit_html}
 
@@ -980,6 +946,482 @@ def _render_ledger_dashboard_html(
 </body>
 </html>
 """
+
+
+def _render_ledger_navigation() -> str:
+    items = [
+        ("#view-buy-hold", "B&H 一次投入", "同一筆初始本金的長期持有結果"),
+        ("#view-dca", "DCA 定期投入", "多次外部現金流，和 B&H 分開閱讀"),
+        ("#view-rebalance", "再平衡", "同一筆初始本金的目標權重配置"),
+        ("#view-leverage-risk", "槓桿風險", "此報表只標示位置，細節看槓桿報表"),
+        ("#view-audit", "Audit 明細", "交易、股息、現金流與 CSV 下載"),
+    ]
+    nav_links = "\n".join(
+        f"""<a class="nav-card" href="{href}">
+  <strong>{escape(title)}</strong>
+  <span>{escape(description)}</span>
+</a>"""
+        for href, title, description in items
+    )
+    return f"""<nav class="section-block dashboard-nav" aria-label="Dashboard views">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">View Switcher</p>
+      <h2>雙層導覽</h2>
+    </div>
+    <p>第一層先選策略族群；每個區塊內再用標的、股息模式與情境表作第二層篩選。</p>
+  </div>
+  <div class="nav-grid">{nav_links}</div>
+</nav>"""
+
+
+def _render_ledger_family_sections(
+    equity: pd.DataFrame,
+    positions: pd.DataFrame,
+    metrics: pd.DataFrame,
+    cash_flows: pd.DataFrame,
+    rebalance: pd.DataFrame,
+    target_weights: Any,
+) -> str:
+    sections = [
+        _render_ledger_family_section(
+            section_id="view-buy-hold",
+            eyebrow="Lump Sum",
+            title="B&H 一次投入",
+            description=(
+                "這裡只比較 ledger_buy_and_hold。它和 DCA 的本金口徑不同，"
+                "所以不和 DCA 放進同一個期末資產排名。"
+            ),
+            strategy="ledger_buy_and_hold",
+            metrics=metrics,
+            equity=equity,
+            positions=positions,
+            target_weights=target_weights,
+            focus="buy_hold",
+        ),
+        _render_ledger_family_section(
+            section_id="view-dca",
+            eyebrow="Cash Flow",
+            title="DCA 定期投入",
+            description=(
+                "DCA 有外部現金流，主要看累計投入、期末資產與 Simple Cash Return；"
+                "CAGR / Sharpe 在 v1 不作主要結論。"
+            ),
+            strategy="ledger_dca",
+            metrics=metrics,
+            equity=equity,
+            positions=positions,
+            target_weights=target_weights,
+            focus="dca",
+            extra_html=_render_family_cash_flow_preview(cash_flows, "ledger_dca"),
+        ),
+        _render_ledger_family_section(
+            section_id="view-rebalance",
+            eyebrow="Portfolio",
+            title="再平衡",
+            description="用 SPY/QQQ 目標權重檢查月初再平衡後的權重漂移與交易成本。",
+            strategy="ledger_rebalance",
+            metrics=metrics,
+            equity=equity,
+            positions=positions,
+            target_weights=target_weights,
+            focus="rebalance",
+            extra_html=_render_rebalance_audit_preview(rebalance),
+        ),
+        _render_static_leverage_placeholder(),
+    ]
+    return "\n".join(sections)
+
+
+def _render_ledger_family_section(
+    *,
+    section_id: str,
+    eyebrow: str,
+    title: str,
+    description: str,
+    strategy: str,
+    metrics: pd.DataFrame,
+    equity: pd.DataFrame,
+    positions: pd.DataFrame,
+    target_weights: Any,
+    focus: str,
+    extra_html: str = "",
+) -> str:
+    family_metrics = _filter_strategy(metrics, strategy)
+    family_equity = _filter_strategy(equity, strategy)
+    family_positions = _filter_strategy(positions, strategy)
+    chips = _render_family_chips(family_metrics)
+    kpis = _render_family_kpi_cards(family_metrics, focus=focus)
+    table = _render_family_metrics_table(family_metrics, focus=focus)
+    charts = _render_family_charts(
+        equity=family_equity,
+        positions=family_positions,
+        metrics=family_metrics,
+        target_weights=target_weights,
+        focus=focus,
+    )
+    return f"""<section class="section-block family-section" id="{section_id}">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">{escape(eyebrow)}</p>
+      <h2>{escape(title)}</h2>
+    </div>
+    <p>{escape(description)}</p>
+  </div>
+  {chips}
+  {kpis}
+  {table}
+  {charts}
+  {extra_html}
+</section>"""
+
+
+def _render_static_leverage_placeholder() -> str:
+    return """<section class="section-block family-section" id="view-leverage-risk">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Risk Lens</p>
+      <h2>槓桿風險</h2>
+    </div>
+    <p>
+      這份 ledger 報表是非槓桿主線。槓桿借款、利息、安全緩衝與 margin call
+      請看 leverage dashboard。
+    </p>
+  </div>
+  <div class="notice-card">
+    <strong>本金口徑提醒</strong>
+    <p>B&H 與再平衡是一筆初始投入；DCA 是多次外部投入。槓桿報表也會沿用這個分區原則。</p>
+  </div>
+</section>"""
+
+
+def _render_family_chips(metrics: pd.DataFrame) -> str:
+    if metrics.empty:
+        return '<div class="filter-row"><span>目前沒有這個策略族群的資料</span></div>'
+    tickers = sorted(metrics["ticker"].dropna().unique()) if "ticker" in metrics else []
+    modes = (
+        sorted(metrics["dividend_mode"].dropna().unique())
+        if "dividend_mode" in metrics
+        else []
+    )
+    basis = sorted(metrics["basis"].dropna().unique()) if "basis" in metrics else []
+    chips = [f"標的: {', '.join(map(str, tickers))}", f"股息: {', '.join(map(str, modes))}"]
+    if basis:
+        chips.append(f"幣別: {', '.join(map(str, basis))}")
+    return "<div class=\"filter-row\">" + "".join(
+        f"<span>{escape(chip)}</span>" for chip in chips
+    ) + "</div>"
+
+
+def _render_family_kpi_cards(metrics: pd.DataFrame, *, focus: str) -> str:
+    if metrics.empty:
+        return '<p class="empty-state">沒有可顯示的策略資料。</p>'
+    focus_row = metrics.loc[metrics["ending_equity"].astype(float).idxmax()]
+    if focus == "dca":
+        cards = [
+            ("累計投入", _format_money_or_blank(focus_row.total_contributed), str(focus_row.basis)),
+            ("期末資產", _format_money_or_blank(focus_row.ending_equity), str(focus_row.basis)),
+            (
+                "Simple Cash Return",
+                _format_percent_or_blank(focus_row.simple_cash_return),
+                "DCA v1 主要報酬口徑",
+            ),
+            ("稅前股息", _format_money_or_blank(focus_row.gross_dividends), str(focus_row.basis)),
+            ("預扣稅", _format_money_or_blank(focus_row.withholding_tax), str(focus_row.basis)),
+            ("最後持股", _format_shares_or_blank(focus_row.final_shares), str(focus_row.ticker)),
+        ]
+    elif focus == "rebalance":
+        cards = [
+            ("期末資產", _format_money_or_blank(focus_row.ending_equity), str(focus_row.basis)),
+            ("投入本金", _format_money_or_blank(focus_row.total_contributed), str(focus_row.basis)),
+            ("CAGR", _format_percent_or_blank(focus_row.cagr), "同一筆初始本金"),
+            ("Sharpe", _format_number_or_blank(focus_row.sharpe), "價格路徑風險"),
+            ("最大回撤", _format_percent_or_blank(focus_row.max_drawdown), "USD/TWD 依 basis"),
+            ("最後權重", str(focus_row.final_weights), "目標配置檢查"),
+        ]
+    else:
+        cards = [
+            ("期末資產", _format_money_or_blank(focus_row.ending_equity), str(focus_row.basis)),
+            ("投入本金", _format_money_or_blank(focus_row.total_contributed), str(focus_row.basis)),
+            ("CAGR", _format_percent_or_blank(focus_row.cagr), "同一筆初始本金"),
+            ("Sharpe", _format_number_or_blank(focus_row.sharpe), "價格路徑風險"),
+            ("最大回撤", _format_percent_or_blank(focus_row.max_drawdown), "歷史最大跌幅"),
+            (
+                "Simple Return",
+                _format_percent_or_blank(focus_row.simple_cash_return),
+                "期末 / 投入 - 1",
+            ),
+        ]
+    cards_html = "\n".join(
+        f"""<article class="kpi-card">
+  <span>{escape(label)}</span>
+  <strong>{escape(value)}</strong>
+  <small>{escape(note)}</small>
+</article>"""
+        for label, value, note in cards
+    )
+    return f'<div class="kpi-grid family-kpis">{cards_html}</div>'
+
+
+def _render_family_metrics_table(metrics: pd.DataFrame, *, focus: str) -> str:
+    if metrics.empty:
+        return '<p class="empty-state">沒有情境指標。</p>'
+    display = metrics.copy()
+    display.insert(
+        0,
+        "scenario",
+        [
+            _scenario_full(row.ticker, row.strategy, row.dividend_mode)
+            for row in display.itertuples()
+        ],
+    )
+    for column in [
+        "simple_cash_return",
+        "total_return",
+        "cagr",
+        "max_drawdown",
+        "volatility",
+    ]:
+        if column in display.columns:
+            display[column] = display[column].map(_format_percent_or_blank)
+    if "sharpe" in display.columns:
+        display["sharpe"] = display["sharpe"].map(_format_number_or_blank)
+    display["calmar_display"] = [
+        _format_calmar(row.cagr, row.max_drawdown) for row in metrics.itertuples()
+    ]
+    for column in [
+        "ending_equity",
+        "total_contributed",
+        "gross_dividends",
+        "withholding_tax",
+        "fees_paid",
+        "cash",
+    ]:
+        if column in display.columns:
+            display[column] = display[column].map(_format_money_or_blank)
+    if "final_shares" in display.columns:
+        display["final_shares"] = display["final_shares"].map(_format_shares_or_blank)
+    if focus == "dca":
+        columns = [
+            ("scenario", "情境"),
+            ("basis", "幣別"),
+            ("total_contributed", "累計投入"),
+            ("ending_equity", "期末資產"),
+            ("simple_cash_return", "Simple Cash Return"),
+            ("gross_dividends", "稅前股息"),
+            ("withholding_tax", "預扣稅"),
+            ("fees_paid", "費用"),
+            ("final_shares", "最後持股"),
+            ("cash", "現金"),
+        ]
+    else:
+        columns = [
+            ("scenario", "情境"),
+            ("basis", "幣別"),
+            ("total_contributed", "投入本金"),
+            ("ending_equity", "期末資產"),
+            ("simple_cash_return", "Simple Return"),
+            ("cagr", "CAGR"),
+            ("sharpe", "Sharpe"),
+            ("calmar_display", "Calmar"),
+            ("max_drawdown", "最大回撤"),
+            ("gross_dividends", "稅前股息"),
+            ("withholding_tax", "預扣稅"),
+            ("fees_paid", "費用"),
+            ("final_weights", "最後權重"),
+        ]
+    return _html_table(display, columns, css_class="wide-table")
+
+
+def _render_family_charts(
+    *,
+    equity: pd.DataFrame,
+    positions: pd.DataFrame,
+    metrics: pd.DataFrame,
+    target_weights: Any,
+    focus: str,
+) -> str:
+    import plotly.graph_objects as go
+
+    color_map = _scenario_color_map(equity)
+    chart_specs: list[tuple[str, str, str, Any]] = [
+        (
+            "USD 權益曲線",
+            "同一策略族群內比較，避免一次投入與定期投入混在一起。",
+            _build_equity_figure(
+                go,
+                equity,
+                value_column="total_equity",
+                yaxis_title="USD",
+                color_map=color_map,
+            ),
+        ),
+        (
+            "投入本金 vs 期末資產",
+            "DCA 看累計投入，B&H / 再平衡看初始投入。",
+            _build_contribution_figure(go, metrics),
+        ),
+    ]
+    if focus != "dca":
+        chart_specs.append(
+            (
+                "回撤路徑",
+                "同本金口徑下觀察歷史下跌深度。",
+                _build_drawdown_figure(go, equity, color_map),
+            )
+        )
+    else:
+        chart_specs.append(
+            (
+                "現金與持股市值",
+                "檢查每期投入、股息留存與再投入造成的現金變化。",
+                _build_cash_market_figure(go, equity, color_map),
+            )
+        )
+    if focus == "rebalance":
+        chart_specs.append(
+            (
+                "權重漂移",
+                "檢查再平衡後 SPY/QQQ 是否回到目標權重附近。",
+                _build_weight_drift_figure(go, positions, target_weights),
+            )
+        )
+    return "\n".join(
+        _render_chart_article(f"{focus}-{index}", title, description, figure)
+        for index, (title, description, figure) in enumerate(chart_specs)
+    )
+
+
+def _render_family_cash_flow_preview(cash_flows: pd.DataFrame, strategy: str) -> str:
+    family_flows = _filter_strategy(cash_flows, strategy)
+    table = _render_event_table(
+        family_flows,
+        [
+            ("date", "日期"),
+            ("ticker", "標的"),
+            ("dividend_mode", "股息模式"),
+            ("kind", "類型"),
+            ("amount", "金額"),
+            ("currency", "幣別"),
+            ("note", "備註"),
+        ],
+    )
+    return f"""<article class="detail-card">
+  <h3>DCA 現金流預覽</h3>
+  <p>這裡只列最近幾筆外部投入；完整資料請到 Audit 區下載 cash flows CSV。</p>
+  {table}
+</article>"""
+
+
+def _render_rebalance_audit_preview(rebalance: pd.DataFrame) -> str:
+    if rebalance.empty:
+        return ""
+    recent = rebalance.tail(8).copy()
+    for column in ["traded_value", "fees"]:
+        if column in recent.columns:
+            recent[column] = recent[column].map(_format_money_or_blank)
+    if "post_rebalance_max_abs_drift" in recent.columns:
+        recent["post_rebalance_max_abs_drift"] = recent[
+            "post_rebalance_max_abs_drift"
+        ].map(_format_percent_or_blank)
+    table = _html_table(
+        recent,
+        [
+            ("date", "日期"),
+            ("ticker", "組合"),
+            ("dividend_mode", "股息模式"),
+            ("trade_count", "交易數"),
+            ("traded_value", "交易金額"),
+            ("post_rebalance_max_abs_drift", "調整後最大偏離"),
+            ("post_rebalance_weights", "調整後權重"),
+            ("trade_reasons", "買賣原因"),
+        ],
+        css_class="compact-table",
+    )
+    return f"""<article class="detail-card">
+  <h3>再平衡讀法</h3>
+  <p>最近再平衡摘要：交易數、調整後權重與買賣原因。完整資料請下載再平衡摘要 CSV。</p>
+  {table}
+</article>"""
+
+
+def _render_ledger_normalized_section(equity: pd.DataFrame) -> str:
+    import plotly.graph_objects as go
+
+    figure = _build_normalized_equity_figure(go, equity)
+    chart = _render_chart_article(
+        "normalized-equity",
+        "10,000 USD 標準化權益曲線",
+        "所有線都從 10,000 開始，僅比較路徑形狀、波動和回撤，不代表實際投入結果。",
+        figure,
+    )
+    return f"""<section class="section-block" id="view-normalized">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Shape Only</p>
+      <h2>標準化比較</h2>
+    </div>
+    <p>這個區塊是輔助視角。B&H、DCA、再平衡的實際投入本金不同，不能用這張圖判定誰賺最多。</p>
+  </div>
+  <div class="notice-card warning-notice">
+    <strong>非實際投入結果，不可當作本金報酬排名。</strong>
+    <p>標準化曲線只回答「哪條路徑比較抖、回撤比較深、復原比較慢」。實際績效請回到各策略族群閱讀。</p>
+  </div>
+  {chart}
+</section>"""
+
+
+def _build_normalized_equity_figure(go: Any, equity: pd.DataFrame) -> Any:
+    figure = go.Figure()
+    has_trace = False
+    color_map = _scenario_color_map(equity)
+    for key, group in _iter_equity_groups(equity):
+        if "total_equity" not in group.columns:
+            continue
+        values = group["total_equity"].astype(float).replace([np.inf, -np.inf], np.nan)
+        values = values.dropna()
+        if values.empty or values.iloc[0] == 0:
+            continue
+        has_trace = True
+        dates = pd.to_datetime(group.loc[values.index, "date"])
+        normalized = values / values.iloc[0] * 10_000.0
+        figure.add_trace(
+            go.Scatter(
+                x=dates,
+                y=normalized,
+                mode="lines",
+                name=_scenario_short(*key),
+                legendgroup=_scenario_id(*key),
+                line={"color": color_map.get(key, "#3f5f73"), "width": 2.2},
+                hovertemplate=(
+                    f"{_scenario_full(*key)}<br>%{{x|%Y-%m-%d}}"
+                    "<br>標準化資產: %{y:,.2f}<extra></extra>"
+                ),
+            )
+        )
+    if not has_trace:
+        _add_empty_annotation(figure, "沒有可標準化的權益曲線資料")
+    return _style_plotly_figure(figure, yaxis_title="Normalized USD")
+
+
+def _render_chart_article(
+    chart_id: str,
+    title: str,
+    description: str,
+    figure: Any,
+) -> str:
+    chart_html = figure.to_html(
+        full_html=False,
+        include_plotlyjs=False,
+        config={"displaylogo": False, "responsive": True},
+    )
+    return f"""<article class="chart-card" id="{escape(chart_id)}">
+  <div class="chart-heading">
+    <h3>{escape(title)}</h3>
+    <p>{escape(description)}</p>
+  </div>
+  {chart_html}
+</article>"""
 
 
 def _render_dashboard_charts(
@@ -1908,6 +2350,12 @@ def _format_trade_reasons(trades: pd.DataFrame) -> str:
     return " | ".join(reasons)
 
 
+def _filter_strategy(frame: pd.DataFrame, strategy: str) -> pd.DataFrame:
+    if frame.empty or "strategy" not in frame.columns:
+        return frame.copy()
+    return frame[frame["strategy"] == strategy].copy()
+
+
 def _note_value(note: str, key: str) -> str:
     prefix = f"{key}="
     for part in note.split(";"):
@@ -2041,6 +2489,47 @@ body {
   margin-top: 14px;
 }
 
+.dashboard-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(10px);
+}
+
+.nav-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.nav-card {
+  display: block;
+  min-height: 88px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfbf7;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.nav-card:hover {
+  border-color: var(--indigo);
+}
+
+.nav-card strong,
+.nav-card span {
+  display: block;
+}
+
+.nav-card span {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 .section-heading {
   display: flex;
   justify-content: space-between;
@@ -2123,7 +2612,8 @@ body {
 }
 
 .legend-guide,
-.download-row {
+.download-row,
+.filter-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -2131,7 +2621,8 @@ body {
 }
 
 .legend-guide span,
-.download-link {
+.download-link,
+.filter-row span {
   display: inline-flex;
   align-items: center;
   min-height: 34px;
@@ -2144,9 +2635,42 @@ body {
   text-decoration: none;
 }
 
+.filter-row span {
+  background: #f7f8f2;
+  color: var(--muted);
+}
+
 .download-link:hover {
   border-color: var(--indigo);
   color: var(--indigo);
+}
+
+.notice-card,
+.detail-card {
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfbf7;
+}
+
+.notice-card strong,
+.detail-card h3 {
+  display: block;
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.notice-card p,
+.detail-card p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.warning-notice {
+  border-color: rgba(182, 111, 82, 0.45);
+  background: #fff8f3;
 }
 
 .chart-card {
@@ -2250,7 +2774,8 @@ td {
   }
 
   .settings-grid,
-  .kpi-grid {
+  .kpi-grid,
+  .nav-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -2267,7 +2792,8 @@ td {
   }
 
   .settings-grid,
-  .kpi-grid {
+  .kpi-grid,
+  .nav-grid {
     grid-template-columns: 1fr;
   }
 
@@ -2464,6 +2990,12 @@ def _format_number_or_blank(value: Any) -> str:
     if pd.isna(value):
         return ""
     return f"{float(value):.2f}"
+
+
+def _format_calmar(cagr: Any, max_drawdown_value: Any) -> str:
+    if pd.isna(cagr) or pd.isna(max_drawdown_value) or float(max_drawdown_value) == 0:
+        return ""
+    return f"{float(cagr) / abs(float(max_drawdown_value)):.2f}"
 
 
 def _format_shares_or_blank(value: Any) -> str:

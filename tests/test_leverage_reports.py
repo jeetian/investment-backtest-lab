@@ -69,8 +69,19 @@ def test_leverage_report_exports_margin_risk_outputs(tmp_path):
     assert {"gross_dividends", "withholding_tax", "dividend_mode"}.issubset(
         report.metrics.columns
     )
-    assert "buy_hold_leveraged" in report.html_path.read_text(encoding="utf-8")
-    assert "安全緩衝" in report.html_path.read_text(encoding="utf-8")
+    html = report.html_path.read_text(encoding="utf-8")
+    assert "buy_hold_leveraged" in html
+    assert "安全緩衝" in html
+    assert "dashboard-shell" in html
+    assert "雙層導覽" in html
+    assert "B&amp;H 一次投入" in html
+    assert "DCA 定期投入" in html
+    assert "再平衡" in html
+    assert "槓桿風險" in html
+    assert "標準化比較" in html
+    assert "非實際投入結果，不可當作本金報酬排名" in html
+    assert "Audit 明細與 CSV 下載" in html
+    assert "policy CSV" in html
     assert "total_equity_twd" in report.curves.columns
     assert "target_leverage" in report.policy.columns
 

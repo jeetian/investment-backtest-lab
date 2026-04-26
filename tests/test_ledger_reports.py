@@ -374,7 +374,11 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert "dashboard-shell" in html
     assert "投資回測 Dashboard" in html
     assert "設定總覽" in html
-    assert "關鍵績效" in html
+    assert "雙層導覽" in html
+    assert "B&amp;H 一次投入" in html
+    assert "DCA 定期投入" in html
+    assert "標準化比較" in html
+    assert "非實際投入結果，不可當作本金報酬排名" in html
     assert "CSV 下載" in html
     assert "ledger_buy_and_hold" in html
     assert "ledger_dca" in html
@@ -387,3 +391,4 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert "再平衡摘要 CSV" in html
     assert "買賣原因" in html
     assert "部位權重 CSV" in html
+    assert html.index("B&amp;H 一次投入") < html.index("DCA 定期投入")
