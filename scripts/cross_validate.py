@@ -35,8 +35,11 @@ def render_markdown(checks, csv_path: Path) -> str:
     table = checks.to_markdown(index=False, disable_numparse=True)
     return f"""# Cross-Tool Validation
 
-這份報表用合成資料做 L3 cross-tool validation。案例刻意保持簡單：
-price-only、zero-fee、no-dividend。目的，是確認 ledger 的核心交易與再平衡數學能和成熟框架對上。
+這份報表用合成資料做 L3 cross-tool validation。案例刻意保持簡單，讓每個檢查只回答一個問題。
+
+第一組 price-only、zero-fee、no-dividend，確認 ledger 的核心交易與再平衡數學能和成熟框架對上。
+第二組 raw price + dividend reinvestment，確認 ledger 沒有漏算股息，
+也沒有把 adjusted price 和股息重複計入。
 
 - CSV：`{csv_path}`
 - 通過標準：`abs_diff <= tolerance`
@@ -48,8 +51,10 @@ price-only、zero-fee、no-dividend。目的，是確認 ledger 的核心交易�
 ## 解讀
 
 - `buy_hold_price_only`：AccountLedger 與 vectorbt 比對單資產 buy-and-hold 期末資產。
+- `raw_dividend_reinvest_vs_adjusted_price`：AccountLedger 用 raw close 加股息再投入，
+  對照人工 total-return adjusted close。
 - `monthly_rebalance_price_only`：PortfolioLedger 與 bt 比對 SPY/QQQ 60/40 月再平衡總報酬。
-- 這不是資料品質驗證，也不涵蓋股息、稅、費用與匯率；那些由 ledger golden tests 和實際報表測試處理。
+- 這不是資料品質驗證，也不涵蓋稅、費用與匯率；那些由 ledger golden tests 和實際報表測試處理。
 """
 
 

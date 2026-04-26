@@ -47,13 +47,14 @@ uv run python scripts\cross_validate.py
 
 - `buy_hold_price_only`：AccountLedger vs `vectorbt`，比對單資產 buy-and-hold 期末資產。
 - `monthly_rebalance_price_only`：PortfolioLedger vs `bt`，比對 SPY/QQQ 60/40 月再平衡總報酬。
+- `raw_dividend_reinvest_vs_adjusted_price`：AccountLedger 使用 raw close 加股息再投入，對照人工建立的 total-return adjusted close。
 
-這批案例不驗證資料品質、股息、稅、費用或匯率；那些由 L1/L2 與 ledger 報表測試處理。L3 的目的，是把核心交易與再平衡數學拿去和成熟框架對答案。
+這批案例不驗證資料品質、稅、費用或匯率；那些由 L1/L2 與 ledger 報表測試處理。L3 的目的，是把核心交易、股息再投入與再平衡數學拿去和成熟框架或獨立公式對答案。
 
 後續擴充方向：
 
 - 報表輸出的 drawdown 指標 vs `quantstats`。
-- raw price + dividend reinvestment vs adjusted price 的近似檢查。
+- raw price + dividend reinvestment vs adjusted price 的 live data 近似檢查。
 - 槓桿策略與風險控制的簡化交叉案例。
 - 台股除權息與台灣基金配息接入後的代表案例。
 

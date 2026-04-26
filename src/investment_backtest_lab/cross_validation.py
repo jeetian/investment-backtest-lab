@@ -36,6 +36,7 @@ class CrossValidationCheck:
 def run_cross_validation(*, tolerance: float = 1e-4) -> pd.DataFrame:
     checks = [
         buy_hold_ledger_vs_vectorbt(tolerance=tolerance),
+        dividend_reinvestment_ledger_vs_adjusted_price(tolerance=tolerance),
         rebalance_ledger_vs_bt(tolerance=tolerance),
     ]
     return pd.DataFrame([asdict(check) for check in checks])
@@ -111,6 +112,53 @@ def rebalance_ledger_vs_bt(*, tolerance: float = 1e-4) -> CrossValidationCheck:
     )
 
 
+def dividend_reinvestment_ledger_vs_adjusted_price(
+    *,
+    tolerance: float = 1e-8,
+) -> CrossValidationCheck:
+    close = pd.Series(
+        [100.0, 102.0, 99.0, 103.0, 101.0, 105.0],
+        index=pd.bdate_range("2024-01-02", periods=6),
+        name="SPY",
+    )
+    dividends = pd.Series(
+        [3.0, 2.5],
+        index=[close.index[2], close.index[4]],
+        name="dividend_per_share",
+    )
+    initial_cash = 10_000.0
+    ledger = run_buy_and_hold_ledger(
+        price_frame=_price_frame("SPY", close),
+        dividend_frame=_dividend_frame("SPY", dividends),
+        cost_model=_zero_cost_model(),
+        initial_cash=initial_cash,
+        dividend_mode=DividendMode.REINVEST,
+        withholding_rate=0.0,
+    )
+    ledger_final = float(ledger.equity_curve["total_equity"].iloc[-1])
+
+    adjusted_total_return = _synthetic_total_return_adjusted_close(
+        close,
+        dividends,
+    )
+    adjusted_portfolio = run_buy_and_hold(
+        adjusted_total_return,
+        init_cash=initial_cash,
+        fees=0.0,
+    )
+    adjusted_final = float(adjusted_portfolio.value().iloc[-1])
+    return _check(
+        case="raw_dividend_reinvest_vs_adjusted_price",
+        primary="AccountLedger",
+        reference="vectorbt_adjusted_total_return",
+        metric="ending_equity_usd",
+        primary_value=ledger_final,
+        reference_value=adjusted_final,
+        tolerance=tolerance,
+        note="Synthetic raw close plus dividends vs constructed total-return adjusted close.",
+    )
+
+
 def _check(
     *,
     case: str,
@@ -162,12 +210,36 @@ def _price_frame(ticker: str, close: pd.Series) -> PriceFrame:
     return PriceFrame(asset=asset, data=data, adjusted=False, source="synthetic")
 
 
+def _dividend_frame(ticker: str, dividends: pd.Series) -> DividendFrame:
+    data = dividends.astype(float).rename("dividend_per_share").to_frame()
+    data.index = pd.DatetimeIndex(data.index, name="date")
+    return DividendFrame(asset=_asset(ticker), data=data, currency="USD", source="synthetic")
+
+
 def _empty_dividend_frame(ticker: str) -> DividendFrame:
     data = pd.DataFrame(
         {"dividend_per_share": pd.Series(dtype="float64")},
         index=pd.DatetimeIndex([], name="date"),
     )
     return DividendFrame(asset=_asset(ticker), data=data, currency="USD", source="synthetic")
+
+
+def _synthetic_total_return_adjusted_close(
+    close: pd.Series,
+    dividends: pd.Series,
+) -> pd.Series:
+    price = close.astype(float).sort_index()
+    dividend_by_date = dividends.astype(float).reindex(price.index, fill_value=0.0)
+    adjusted = pd.Series(index=price.index, dtype="float64", name=f"{price.name}_ADJ_TR")
+    adjusted.iloc[0] = float(price.iloc[0])
+    for index_position in range(1, len(price)):
+        previous_close = float(price.iloc[index_position - 1])
+        current_close = float(price.iloc[index_position])
+        dividend = float(dividend_by_date.iloc[index_position])
+        adjusted.iloc[index_position] = adjusted.iloc[index_position - 1] * (
+            (current_close + dividend) / previous_close
+        )
+    return adjusted
 
 
 def _asset(ticker: str) -> AssetSpec:
@@ -198,6 +270,7 @@ def _zero_cost_model() -> CostModel:
 __all__ = [
     "CrossValidationCheck",
     "buy_hold_ledger_vs_vectorbt",
+    "dividend_reinvestment_ledger_vs_adjusted_price",
     "rebalance_ledger_vs_bt",
     "run_cross_validation",
 ]

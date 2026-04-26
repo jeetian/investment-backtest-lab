@@ -163,8 +163,9 @@ uv sync --extra dev
 驗證重點：
 
 - `buy_hold_price_only` 會用合成 SPY 價格，比對 AccountLedger 與 vectorbt 的期末資產。
+- `raw_dividend_reinvest_vs_adjusted_price` 會用合成 raw close 與股息，比對 AccountLedger 股息再投入與人工 total-return adjusted close。
 - `monthly_rebalance_price_only` 會用合成 SPY/QQQ 價格，比對 PortfolioLedger 與 bt 的 60/40 月再平衡總報酬。
-- 這組驗證刻意排除股息、稅、費用與匯率，讓問題只剩下核心交易與再平衡數學。
+- 這組驗證刻意排除真實資料品質、稅、費用與匯率，讓問題聚焦在核心交易、股息再投入與再平衡數學。
 
 ## 9. 排錯順序
 

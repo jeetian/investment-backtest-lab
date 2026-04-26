@@ -55,7 +55,7 @@ uv run python scripts\cross_validate.py
 - `smoke_imports.py`: `pandas`、`vectorbt`、`bt`、`quantstats`、`yfinance`、`FinMind` 都顯示 `[OK]`
 - `run_prototype.py`: 會輸出均線策略摘要、DCA 摘要、Rolling 3Y CAGR
 - `analyze_ledger.py`: 會輸出 raw price + 股息 + 稅 + 成本 + DCA 現金流 + SPY/QQQ 再平衡的可審計 ledger 報表
-- `cross_validate.py`: 會用 synthetic price-only 案例比對 ledger vs `vectorbt` / `bt`
+- `cross_validate.py`: 會用 synthetic 案例比對 ledger vs `vectorbt` / `bt`，並檢查 raw price + 股息再投入 vs adjusted total-return price
 
 ## 專案目標
 
