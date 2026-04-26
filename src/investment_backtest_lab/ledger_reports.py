@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -869,6 +870,7 @@ def _render_ledger_dashboard_html(
         report_context.get("target_weights", {}),
     )
     normalized_section = _render_ledger_normalized_section(equity)
+    compare_lab = _render_ledger_compare_lab(equity)
     audit_html = _render_audit_section(
         output_path=output_path,
         metrics_path=metrics_path,
@@ -939,10 +941,13 @@ def _render_ledger_dashboard_html(
 
     {normalized_section}
 
+    {compare_lab}
+
     {audit_html}
 
     {warning_html}
   </main>
+  {_compare_lab_script()}
 </body>
 </html>
 """
@@ -954,6 +959,7 @@ def _render_ledger_navigation() -> str:
         ("#view-dca", "DCA 定期投入", "多次外部現金流，和 B&H 分開閱讀"),
         ("#view-rebalance", "再平衡", "同一筆初始本金的目標權重配置"),
         ("#view-leverage-risk", "槓桿風險", "此報表只標示位置，細節看槓桿報表"),
+        ("#view-compare-lab", "Compare Lab", "自由勾選情境疊圖"),
         ("#view-audit", "Audit 明細", "交易、股息、現金流與 CSV 下載"),
     ]
     nav_links = "\n".join(
@@ -1368,6 +1374,247 @@ def _render_ledger_normalized_section(equity: pd.DataFrame) -> str:
   </div>
   <div class="chart-grid three-up">{charts}</div>
 </section>"""
+
+
+def _render_ledger_compare_lab(equity: pd.DataFrame) -> str:
+    payload = _build_ledger_compare_payload(equity)
+    payload_json = _json_for_script(payload)
+    checkboxes = _render_compare_checkboxes(payload["scenarios"], lab_id="ledger")
+    metric_buttons = _render_compare_metric_buttons(
+        payload["metrics"],
+        default_metric="total_equity",
+    )
+    return f"""<section class="section-block compare-lab" id="view-compare-lab"
+    data-compare-lab="ledger"
+    data-compare-payload="ledger-compare-payload">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Compare Lab</p>
+      <h2>Ledger Compare Lab</h2>
+    </div>
+    <p>自由勾選想疊圖的情境，再切換總資產、標準化曲線、回撤、現金或市值。
+      建議最多 6 條線，超過仍可比較但可讀性會下降。</p>
+  </div>
+  <div class="notice-card warning-notice">
+    <strong>DCA 與標準化曲線限制</strong>
+    <p>DCA 有外部現金流，normalized equity 只能比較路徑形狀，
+      不能當作實際本金報酬排名；實際投入結果請回到 DCA 區看累計投入、期末資產與現金流。</p>
+  </div>
+  <div class="compare-layout">
+    <aside class="compare-control">
+      <h3>可比較情境</h3>
+      <div class="compare-checkbox-list">{checkboxes}</div>
+    </aside>
+    <div class="compare-main">
+      <div class="compare-toolbar" data-compare-metrics>{metric_buttons}</div>
+      <div class="compare-selection" data-compare-selection>尚未選取情境。</div>
+      <div class="compare-warning" data-compare-warning></div>
+      <div id="ledger-compare-chart" class="compare-chart" data-compare-chart></div>
+    </div>
+  </div>
+  <script type="application/json" id="ledger-compare-payload">{payload_json}</script>
+</section>"""
+
+
+def _build_ledger_compare_payload(equity: pd.DataFrame) -> dict[str, Any]:
+    metric_config = {
+        "total_equity": {"label": "總資產", "axis": "USD", "format": "money"},
+        "normalized_equity": {
+            "label": "標準化 10,000",
+            "axis": "Normalized USD",
+            "format": "money",
+        },
+        "drawdown": {"label": "回撤", "axis": "Drawdown", "format": "percent"},
+        "cash": {"label": "現金", "axis": "USD", "format": "money"},
+        "market_value": {"label": "持股市值", "axis": "USD", "format": "money"},
+    }
+    default_keys = {
+        _scenario_key("SPY_QQQ", "ledger_rebalance", "cash"),
+        _scenario_key("SPY_QQQ", "ledger_rebalance", "reinvest"),
+    }
+    scenarios: list[dict[str, Any]] = []
+    for key_tuple, group in _iter_equity_groups(equity):
+        ticker, strategy, mode = key_tuple
+        key = _scenario_key(ticker, strategy, mode)
+        total_equity = (
+            group["total_equity"].astype(float)
+            if "total_equity" in group
+            else pd.Series(dtype=float)
+        )
+        scenarios.append(
+            {
+                "key": key,
+                "short": _scenario_short(ticker, strategy, mode),
+                "full": _scenario_full(ticker, strategy, mode),
+                "subtitle": f"{_strategy_label(strategy)} / {_mode_label(mode)}",
+                "family": _strategy_short(strategy),
+                "ticker": ticker,
+                "strategy": strategy,
+                "dividend_mode": mode,
+                "default": key in default_keys,
+                "dates": [
+                    pd.Timestamp(date).date().isoformat()
+                    for date in pd.to_datetime(group["date"])
+                ],
+                "series": {
+                    "total_equity": _json_series(group.get("total_equity")),
+                    "normalized_equity": _json_series(_normalized_series(total_equity)),
+                    "drawdown": _json_series(_drawdown_series(total_equity)),
+                    "cash": _json_series(group.get("cash")),
+                    "market_value": _json_series(group.get("market_value")),
+                },
+            }
+        )
+    if not any(scenario["default"] for scenario in scenarios):
+        for scenario in scenarios[:2]:
+            scenario["default"] = True
+    return {"metrics": metric_config, "scenarios": scenarios}
+
+
+def _render_compare_checkboxes(scenarios: list[dict[str, Any]], *, lab_id: str) -> str:
+    if not scenarios:
+        return '<p class="empty-state">沒有可比較情境。</p>'
+    checkboxes: list[str] = []
+    for scenario in scenarios:
+        checked = " checked" if scenario.get("default") else ""
+        checkboxes.append(
+            f"""<label class="compare-option">
+  <input type="checkbox"
+    data-compare-checkbox="{escape(lab_id)}"
+    value="{escape(str(scenario["key"]))}"{checked}>
+  <span>
+    <strong>{escape(str(scenario["short"]))}</strong>
+    <small>{escape(str(scenario.get("subtitle") or scenario["full"]))}</small>
+  </span>
+</label>"""
+        )
+    return "\n".join(checkboxes)
+
+
+def _render_compare_metric_buttons(
+    metrics: dict[str, dict[str, str]],
+    *,
+    default_metric: str,
+) -> str:
+    buttons: list[str] = []
+    for metric, config in metrics.items():
+        active = " is-active" if metric == default_metric else ""
+        buttons.append(
+            f"""<button class="metric-button{active}" type="button"
+    data-compare-metric="{escape(metric)}">
+  {escape(config["label"])}
+</button>"""
+        )
+    return "\n".join(buttons)
+
+
+def _normalized_series(values: pd.Series) -> pd.Series:
+    values = pd.Series(values).astype(float).replace([np.inf, -np.inf], np.nan)
+    valid = values.dropna()
+    if valid.empty or valid.iloc[0] == 0:
+        return pd.Series(np.nan, index=values.index)
+    return values / valid.iloc[0] * 10_000.0
+
+
+def _drawdown_series(values: pd.Series) -> pd.Series:
+    values = pd.Series(values).astype(float).replace([np.inf, -np.inf], np.nan)
+    if values.dropna().empty:
+        return pd.Series(np.nan, index=values.index)
+    return _drawdown(values)
+
+
+def _json_series(values: Any) -> list[float | None]:
+    if values is None:
+        return []
+    series = pd.Series(values)
+    output: list[float | None] = []
+    for value in series:
+        if pd.isna(value) or value in (np.inf, -np.inf):
+            output.append(None)
+        else:
+            output.append(round(float(value), 6))
+    return output
+
+
+def _json_for_script(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+
+
+def _compare_lab_script() -> str:
+    return """<script>
+function initCompareLab(lab) {
+  const payloadElement = document.getElementById(lab.dataset.comparePayload);
+  const chart = lab.querySelector("[data-compare-chart]");
+  if (!payloadElement || !chart || !window.Plotly) return;
+  const payload = JSON.parse(payloadElement.textContent);
+  const checkboxes = Array.from(lab.querySelectorAll("[data-compare-checkbox]"));
+  const metricButtons = Array.from(lab.querySelectorAll("[data-compare-metric]"));
+  const selectedText = lab.querySelector("[data-compare-selection]");
+  const warning = lab.querySelector("[data-compare-warning]");
+  const scenarioMap = new Map(payload.scenarios.map((scenario) => [scenario.key, scenario]));
+  let activeMetric = metricButtons.find((button) => button.classList.contains("is-active"))
+    ?.dataset.compareMetric || Object.keys(payload.metrics)[0];
+
+  function redraw() {
+    const selectedKeys = checkboxes
+      .filter((checkbox) => checkbox.checked)
+      .map((checkbox) => checkbox.value);
+    const metricConfig = payload.metrics[activeMetric] || {};
+    const traces = selectedKeys
+      .map((key) => scenarioMap.get(key))
+      .filter(Boolean)
+      .map((scenario) => ({
+        x: scenario.dates,
+        y: scenario.series[activeMetric],
+        mode: "lines",
+        type: "scatter",
+        name: scenario.short,
+        hovertemplate: `${scenario.full}<br>%{x}<br>${metricConfig.label}: %{y}<extra></extra>`,
+      }));
+    const layout = {
+      template: "plotly_white",
+      paper_bgcolor: "#ffffff",
+      plot_bgcolor: "#ffffff",
+      height: 430,
+      margin: { l: 62, r: 26, t: 22, b: 54 },
+      hovermode: "x unified",
+      showlegend: true,
+      legend: { orientation: "h", y: 1.12, x: 0, font: { size: 11 } },
+      font: { family: "Noto Sans TC, Noto Sans JP, Segoe UI, sans-serif", color: "#202521" },
+      xaxis: { showgrid: false, zeroline: false },
+      yaxis: { title: metricConfig.axis || activeMetric, gridcolor: "#e6e8e1", zeroline: false },
+    };
+    if (metricConfig.format === "percent") {
+      layout.yaxis.tickformat = ".0%";
+    }
+    Plotly.react(chart, traces, layout, { displaylogo: false, responsive: true });
+    if (selectedText) {
+      selectedText.textContent = selectedKeys.length
+        ? `已選 ${selectedKeys.length} 個情境：${
+            selectedKeys.map((key) => scenarioMap.get(key)?.short).join("、")
+          }`
+        : "尚未選取情境。";
+    }
+    if (warning) {
+      warning.textContent = selectedKeys.length > 6
+        ? "已超過建議最多 6 條線，可繼續比較，但建議縮小範圍比較。"
+        : "";
+    }
+  }
+
+  checkboxes.forEach((checkbox) => checkbox.addEventListener("change", redraw));
+  metricButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      activeMetric = button.dataset.compareMetric;
+      metricButtons.forEach((item) => item.classList.toggle("is-active", item === button));
+      redraw();
+    });
+  });
+  redraw();
+}
+
+document.querySelectorAll("[data-compare-lab]").forEach(initCompareLab);
+</script>"""
 
 
 def _build_normalized_equity_figure(go: Any, equity: pd.DataFrame, *, strategy: str) -> Any:
@@ -2216,6 +2463,11 @@ def _scenario_id(ticker: str, strategy: str, mode: str) -> str:
     return f"{ticker}-{strategy}-{mode}"
 
 
+def _scenario_key(ticker: Any, strategy: Any, mode: Any) -> str:
+    raw = f"{ticker}__{strategy}__{mode}"
+    return "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-")
+
+
 def _scenario_short(ticker: str, strategy: str, mode: str) -> str:
     return f"{ticker} {_strategy_short(strategy)} {_mode_short(mode)}"
 
@@ -2673,6 +2925,119 @@ body {
   background: #fff8f3;
 }
 
+.compare-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.32fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.compare-control,
+.compare-main {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfbf7;
+}
+
+.compare-control {
+  max-height: 620px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.compare-control h3 {
+  margin: 0 0 10px;
+  font-size: 0.98rem;
+}
+
+.compare-checkbox-list {
+  display: grid;
+  gap: 8px;
+}
+
+.compare-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.compare-option:hover {
+  border-color: var(--indigo);
+}
+
+.compare-option input {
+  margin-top: 3px;
+  accent-color: var(--indigo);
+}
+
+.compare-option strong,
+.compare-option small {
+  display: block;
+}
+
+.compare-option small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.compare-main {
+  min-width: 0;
+  padding: 14px;
+}
+
+.compare-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.metric-button {
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.metric-button:hover,
+.metric-button.is-active {
+  border-color: var(--indigo);
+  background: #f1f5f2;
+  color: var(--indigo);
+}
+
+.compare-selection,
+.compare-warning {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.compare-warning {
+  min-height: 1.4em;
+  margin-top: 4px;
+  color: var(--copper);
+  font-weight: 700;
+}
+
+.compare-chart {
+  min-height: 430px;
+  margin-top: 8px;
+}
+
 .chart-grid {
   display: grid;
   gap: 12px;
@@ -2785,6 +3150,7 @@ td {
   .settings-grid,
   .kpi-grid,
   .nav-grid,
+  .compare-layout,
   .chart-grid.three-up {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2804,6 +3170,7 @@ td {
   .settings-grid,
   .kpi-grid,
   .nav-grid,
+  .compare-layout,
   .chart-grid.three-up {
     grid-template-columns: 1fr;
   }

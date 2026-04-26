@@ -80,6 +80,17 @@ def test_leverage_report_exports_margin_risk_outputs(tmp_path):
     assert "槓桿風險" in html
     assert "scenario-selector" in html
     assert "data-scenario-panel" in html
+    assert "compare-lab" in html
+    assert 'data-compare-lab="leverage"' in html
+    assert 'data-compare-checkbox="leverage"' in html
+    assert 'data-compare-metric="total_equity"' in html
+    assert 'data-compare-metric="normalized_equity"' in html
+    assert "leverage-compare-payload" in html
+    assert "normalized equity" in html
+    assert "debt" in html
+    assert "safety_buffer" in html
+    assert "actual_leverage" in html
+    assert html.count(" checked>") <= 4
     assert '"showlegend":false' in html
     assert "標準化比較" in html
     assert "B&amp;H 標準化路徑" in html

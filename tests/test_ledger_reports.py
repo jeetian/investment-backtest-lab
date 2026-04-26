@@ -372,6 +372,16 @@ def test_write_ledger_report_outputs_markdown_csv_and_html(tmp_path):
     assert "https://fonts.googleapis.com" in html
     assert "Noto Sans TC" in html
     assert "dashboard-shell" in html
+    assert "compare-lab" in html
+    assert 'data-compare-lab="ledger"' in html
+    assert 'data-compare-checkbox="ledger"' in html
+    assert 'data-compare-metric="total_equity"' in html
+    assert 'data-compare-metric="normalized_equity"' in html
+    assert "ledger-compare-payload" in html
+    assert "normalized equity" in html
+    assert "cash" in html
+    assert "market_value" in html
+    assert html.count(" checked>") <= 4
     assert "投資回測 Dashboard" in html
     assert "設定總覽" in html
     assert "雙層導覽" in html
