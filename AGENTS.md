@@ -9,6 +9,7 @@
 - `docs/PROJECT_SCOPE_ZH.md`
 - `docs/ROADMAP_ZH.md`
 - `docs/VALIDATION_STRATEGY_ZH.md`
+- `docs/FRAMEWORK_HYGIENE_ZH.md`
 
 MVP 評估範圍：
 
@@ -50,8 +51,10 @@ MVP 評估範圍：
 嚴謹現金流主線：
 
 - `AccountLedger` 是後續嚴謹回測的核心。
+- `MarginLoanLedger` 是美股 ETF 輕槓桿研究的核心，必須獨立保留借款、利息、維持率、安全緩衝與 margin call audit trail。
 - `vectorbt` 與 `bt` 保留作策略訊號、參數掃描、配置研究與 cross-tool validation。
 - 不要把研究框架的輸出直接當成最終 audit trail；需要能回溯交易、股息、費用、稅與每日資產。
+- margin loan 和 leveraged ETF product 必須分開建模；槓桿 ETF 只當一般價格序列資產，不宣稱已模擬產品內部每日重設、swap 或期貨細節。
 
 ---
 
@@ -187,4 +190,5 @@ MVP 不做：
 .\.venv\Scripts\python.exe -m pytest
 .\.venv\Scripts\python.exe scripts\smoke_imports.py
 .\.venv\Scripts\python.exe scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
+.\.venv\Scripts\python.exe scripts\analyze_leverage.py --config configs\mvp_example.yaml --tickers SPY QQQ
 ```

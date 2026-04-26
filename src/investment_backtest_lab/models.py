@@ -33,6 +33,11 @@ class DividendMode(StrEnum):
     REINVEST = "reinvest"
 
 
+class LeverageKind(StrEnum):
+    MARGIN_LOAN = "margin_loan"
+    LEVERAGED_ETF_PRODUCT = "leveraged_etf_product"
+
+
 @dataclass(frozen=True)
 class AssetSpec:
     ticker: str
@@ -146,6 +151,32 @@ class LedgerConfig:
 
 
 @dataclass(frozen=True)
+class LeverageConfig:
+    enabled: bool = False
+    kind: LeverageKind = LeverageKind.MARGIN_LOAN
+    target_leverage: float = 1.30
+    max_leverage: float = 1.30
+    annual_borrow_rate: float = 0.065
+    maintenance_requirement: float = 0.35
+    min_safety_buffer: float = 0.25
+    deleverage_to: float = 1.10
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> LeverageConfig:
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            kind=LeverageKind(str(data.get("kind", LeverageKind.MARGIN_LOAN.value)).lower()),
+            target_leverage=float(data.get("target_leverage", 1.30)),
+            max_leverage=float(data.get("max_leverage", 1.30)),
+            annual_borrow_rate=float(data.get("annual_borrow_rate", 0.065)),
+            maintenance_requirement=float(data.get("maintenance_requirement", 0.35)),
+            min_safety_buffer=float(data.get("min_safety_buffer", 0.25)),
+            deleverage_to=float(data.get("deleverage_to", 1.10)),
+        )
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     universe: list[AssetSpec]
     start_date: date
@@ -159,6 +190,7 @@ class BacktestConfig:
     tax: TaxConfig = field(default_factory=TaxConfig)
     dividend: DividendConfig = field(default_factory=DividendConfig)
     ledger: LedgerConfig = field(default_factory=LedgerConfig)
+    leverage: LeverageConfig = field(default_factory=LeverageConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BacktestConfig:
@@ -175,6 +207,7 @@ class BacktestConfig:
             tax=TaxConfig.from_dict(data.get("tax")),
             dividend=DividendConfig.from_dict(data.get("dividend")),
             ledger=LedgerConfig.from_dict(data.get("ledger")),
+            leverage=LeverageConfig.from_dict(data.get("leverage")),
         )
 
 

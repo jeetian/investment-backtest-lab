@@ -29,6 +29,10 @@ L1 主要避免「資料壞掉卻跑出漂亮報表」。
 - DCA 每期投入、買入、費用與期末資產正確。
 - 再平衡會先賣超配，再買低配，且不超買。
 - 每日 snapshot 滿足 `cash + market value = total equity`。
+- 槓桿 snapshot 滿足 `cash + market value - debt = total equity`。
+- margin loan 每日利息會降低 equity，並增加 debt。
+- `safety_buffer < min_safety_buffer` 時會自動降槓桿到 `deleverage_to`。
+- `equity_ratio <= maintenance_requirement` 時會記錄 margin call 與 forced deleverage。
 - TWD 換算使用對齊後的 USD/TWD 匯率。
 
 Golden case 是本專案最重要的防線。只要 ledger 行為有變，應優先補 golden tests。
@@ -56,6 +60,7 @@ uv run python scripts\cross_validate.py
 - 報表輸出的 drawdown 指標 vs `quantstats`。
 - raw price + dividend reinvestment vs adjusted price 的 live data 近似檢查。
 - 槓桿策略與風險控制的簡化交叉案例。
+- `target_leverage=1.0`、zero-interest、price-only 時，槓桿 ledger 應貼近無槓桿 ledger。
 - 台股除權息與台灣基金配息接入後的代表案例。
 
 ## 標準驗證命令
@@ -64,7 +69,7 @@ uv run python scripts\cross_validate.py
 
 ```powershell
 uv run pytest
-uv run ruff check src tests scripts\analyze_ledger.py scripts\cross_validate.py
+uv run ruff check src tests scripts\analyze_ledger.py scripts\analyze_leverage.py scripts\cross_validate.py
 ```
 
 修改資料、報表或 CLI 時，加跑：
@@ -74,6 +79,7 @@ uv run python scripts\smoke_imports.py
 uv run python scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
 uv run python scripts\analyze_results.py --config configs\mvp_example.yaml --tickers SPY QQQ
 uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+uv run python scripts\analyze_leverage.py --config configs\mvp_example.yaml --tickers SPY QQQ
 uv run python scripts\cross_validate.py
 ```
 
@@ -84,6 +90,7 @@ uv run python scripts\cross_validate.py
 - 資料來源與日期範圍。
 - 策略、股息模式、成本、稅率與基準幣別。
 - trades、dividends、cash flows、equity、positions、rebalance CSV。
+- 槓桿報表必須能看到 debt、interest、actual leverage、equity ratio、safety buffer、margin events。
 - 重要限制，例如 yfinance dividend date、fractional shares、raw/adjusted price 假設。
 
 每個新增功能都應該能回答三個問題：

@@ -18,6 +18,7 @@ uv run pytest
 uv run python scripts\smoke_imports.py
 uv run python scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
 uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+uv run python scripts\analyze_leverage.py --config configs\mvp_example.yaml --tickers SPY QQQ
 uv run python scripts\cross_validate.py
 ```
 
@@ -37,6 +38,7 @@ uv run python scripts\cross_validate.py
 - FinMind live data smoke test：目前因未設定 `FINMIND_TOKEN` 而跳過
 - quickstart SPY/QQQ 結果檢視報表
 - 美股 account/portfolio ledger 核心、buy-and-hold、DCA、SPY/QQQ 再平衡 ledger 報表
+- 美股 ETF 輕槓桿 margin loan 風險模型：1.3x 目標槓桿、每日利息、維持率、安全緩衝、自動降槓桿與 margin call audit trail
 - git baseline commit 已建立，後續里程碑可回溯
 
 驗證結果：
@@ -46,6 +48,7 @@ uv run python scripts\cross_validate.py
 .\.venv\Scripts\python.exe scripts\smoke_imports.py
 .\.venv\Scripts\python.exe scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
 .\.venv\Scripts\python.exe scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+.\.venv\Scripts\python.exe scripts\analyze_leverage.py --config configs\mvp_example.yaml --tickers SPY QQQ
 .\.venv\Scripts\python.exe scripts\cross_validate.py
 ```
 
@@ -55,6 +58,7 @@ uv run python scripts\cross_validate.py
 - `smoke_imports.py`: `pandas`、`vectorbt`、`bt`、`quantstats`、`yfinance`、`FinMind` 都顯示 `[OK]`
 - `run_prototype.py`: 會輸出均線策略摘要、DCA 摘要、Rolling 3Y CAGR
 - `analyze_ledger.py`: 會輸出 raw price + 股息 + 稅 + 成本 + DCA 現金流 + SPY/QQQ 再平衡的可審計 ledger 報表
+- `analyze_leverage.py`: 會輸出美股 ETF margin loan 借款、利息、安全緩衝、降槓桿事件與風險報表
 - `cross_validate.py`: 會用 synthetic 案例比對 ledger vs `vectorbt` / `bt`，並檢查 raw price + 股息再投入 vs adjusted total-return price
 
 ## 專案目標
@@ -69,6 +73,7 @@ uv run python scripts\cross_validate.py
 - 績效預設以 TWD 呈現，並保留 USD 原幣參考
 - 成本模型處理交易層費用，不做完整個人稅務模擬
 - ledger 作為嚴謹現金流與 audit trail 主線；`vectorbt` / `bt` 保留作研究與交叉驗證
+- 槓桿研究先做美股 ETF margin loan 風險模型；槓桿 ETF 只當價格序列資產回測，不能宣稱已模擬產品內部每日重設、swap 或期貨機制
 
 ## 專案結構
 
@@ -146,6 +151,7 @@ $env:FINMIND_TOKEN = "你的 token"
 - [專案 Scope](docs/PROJECT_SCOPE_ZH.md)
 - [Roadmap](docs/ROADMAP_ZH.md)
 - [正確性驗證策略](docs/VALIDATION_STRATEGY_ZH.md)
+- [框架維護清單](docs/FRAMEWORK_HYGIENE_ZH.md)
 - [環境設定指南](docs/SETUP_ZH.md)
 - [驗證與排錯指南](docs/VALIDATION_ZH.md)
 

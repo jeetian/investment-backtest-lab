@@ -12,6 +12,7 @@
 - 一次離線 prototype 結果：均線策略摘要、DCA 摘要、Rolling 3Y CAGR
 - 一次 yfinance live data 檢查：`SPY`、`QQQ`、`USDTWD=X`
 - 一份可審計的美股 ledger 報表：raw price、股息、稅、成本、DCA 現金流、USD/TWD
+- 一份美股 ETF 輕槓桿風險報表：margin loan、每日利息、安全緩衝、自動降槓桿
 
 ## 1. 1 分鐘確認環境
 
@@ -244,7 +245,31 @@ reports/ledger_spy_qqq.html
 uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ --strategies dca
 ```
 
-## 8. 設定 FinMind Token
+## 8. 跑輕槓桿風險報表
+
+槓桿報表目前是美股 ETF margin loan 研究模型，預設 1.3x 目標槓桿、6.5% 年化借款利率、35% 維持率、安全緩衝低於 25 percentage points 時自動降到 1.1x。
+
+```powershell
+uv run python scripts\analyze_leverage.py --config configs\mvp_example.yaml --tickers SPY QQQ
+```
+
+輸出檔案會在：
+
+```text
+reports/leverage_spy_qqq.md
+reports/leverage_spy_qqq_metrics.csv
+reports/leverage_spy_qqq_trades.csv
+reports/leverage_spy_qqq_interest.csv
+reports/leverage_spy_qqq_events.csv
+reports/leverage_spy_qqq_curve.csv
+reports/leverage_spy_qqq.html
+```
+
+先看 `metrics.csv` 或 HTML 裡的 `worst_safety_buffer`、`margin_call_count`、`forced_deleverage_count`、`interest_paid`。這份報表第一版用來確認「會不會太接近爆倉」，不是用來直接挑最高 CAGR。
+
+目前 v1 支援 `buy_hold_leveraged`、`dca_leveraged` 與 SPY/QQQ 60/40 的 `rebalance_leveraged`。槓桿 ETF 產品先當一般價格序列，不混入 margin loan 借款模型。
+
+## 9. 設定 FinMind Token
 
 台股與台灣 ETF live data 需要 FinMind token。先用暫時環境變數：
 

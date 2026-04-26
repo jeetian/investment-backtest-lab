@@ -1,5 +1,5 @@
 from investment_backtest_lab.config import load_backtest_config
-from investment_backtest_lab.models import DataSource, DividendMode, Market
+from investment_backtest_lab.models import DataSource, DividendMode, LeverageKind, Market
 
 
 def test_load_mvp_config():
@@ -16,3 +16,7 @@ def test_load_mvp_config():
     assert config.ledger.base_currency == "TWD"
     assert config.ledger.account_currency == "USD"
     assert config.ledger.initial_cash == 10_000
+    assert config.leverage.enabled is True
+    assert config.leverage.kind == LeverageKind.MARGIN_LOAN
+    assert config.leverage.target_leverage == 1.30
+    assert config.leverage.maintenance_requirement == 0.35

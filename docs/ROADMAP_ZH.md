@@ -31,9 +31,17 @@
 - 策略 registry 可用 config 選擇策略與參數。
 - 再平衡從 SPY/QQQ 擴充到更多美股 ETF，並加入 cross-tool validation。
 - 動能輪動、波動度目標、研究版槓桿策略可以跑。
+- 美股 ETF margin loan 風險模型可輸出借款、每日利息、維持率、安全緩衝、margin call 與 forced deleverage。
+- 槓桿策略比較以 Calmar、Sortino、Sharpe、max drawdown、worst safety buffer 與 margin call 次數為主，不用 CAGR 單獨排序。
 - `vectorbt` 用於訊號、參數掃描與快速比較。
 - `bt` 用於配置型策略交叉檢查。
 - L3 cross-tool validation 有至少一批代表案例。
+
+目前狀態：
+
+- 已新增美股 ETF margin loan v1，支援 buy_hold_leveraged、dca_leveraged 與 SPY/QQQ 60/40 rebalance_leveraged。
+- 下一步應加入槓桿策略 cross-tool / 手算情境驗證，以及動態降槓桿訊號。
+- leveraged ETF product 先只作為一般價格序列資產，不與 margin loan 會計混用。
 
 ## Phase 3：台股、台灣 ETF、台灣基金
 

@@ -58,6 +58,16 @@ ledger:
   account_currency: USD
   initial_cash: 10000
 
+leverage:
+  enabled: true
+  kind: margin_loan
+  target_leverage: 1.30
+  max_leverage: 1.30
+  annual_borrow_rate: 0.065
+  maintenance_requirement: 0.35
+  min_safety_buffer: 0.25
+  deleverage_to: 1.10
+
 cost_model:
   tw:
     commission_rate: 0.001425

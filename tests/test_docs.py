@@ -8,6 +8,7 @@ def test_project_scope_docs_are_utf8_readable():
         Path("docs/PROJECT_SCOPE_ZH.md"),
         Path("docs/ROADMAP_ZH.md"),
         Path("docs/VALIDATION_STRATEGY_ZH.md"),
+        Path("docs/FRAMEWORK_HYGIENE_ZH.md"),
         Path("docs/QUICKSTART_ZH.md"),
         Path("docs/SETUP_ZH.md"),
         Path("docs/VALIDATION_ZH.md"),
@@ -26,6 +27,7 @@ def test_readme_and_agents_link_to_scope_documents():
         "docs/PROJECT_SCOPE_ZH.md",
         "docs/ROADMAP_ZH.md",
         "docs/VALIDATION_STRATEGY_ZH.md",
+        "docs/FRAMEWORK_HYGIENE_ZH.md",
     ]:
         assert link in readme
         assert link in agents
