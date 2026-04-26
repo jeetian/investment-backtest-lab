@@ -3,9 +3,12 @@ import pytest
 
 from investment_backtest_lab.costs import CostModel
 from investment_backtest_lab.leverage import MarginLoanLedger, PortfolioMarginLedger
+from investment_backtest_lab.leverage_policy import decide_dynamic_leverage
 from investment_backtest_lab.leverage_reports import (
     run_buy_hold_leveraged,
     run_dca_leveraged,
+    run_dynamic_buy_hold_leveraged,
+    run_dynamic_rebalance_leveraged,
     run_rebalance_leveraged,
 )
 from investment_backtest_lab.models import (
@@ -14,6 +17,7 @@ from investment_backtest_lab.models import (
     DataSource,
     DividendFrame,
     DividendMode,
+    DynamicLeverageConfig,
     LeverageConfig,
     Market,
     PriceFrame,
@@ -57,6 +61,23 @@ def leverage_config(**overrides) -> LeverageConfig:
     return LeverageConfig(**values)
 
 
+def dynamic_config(**overrides) -> DynamicLeverageConfig:
+    values = {
+        "enabled": True,
+        "trend_window": 3,
+        "volatility_window": 3,
+        "high_volatility": 0.50,
+        "drawdown_guard": -0.10,
+        "crash_guard": -0.20,
+        "risk_on_leverage": 1.3,
+        "neutral_leverage": 1.1,
+        "risk_off_leverage": 1.0,
+        "safety_buffer_guard": 0.30,
+    }
+    values.update(overrides)
+    return DynamicLeverageConfig(**values)
+
+
 def flat_price_frame() -> PriceFrame:
     index = pd.bdate_range("2024-01-02", periods=5)
     data = pd.DataFrame(
@@ -73,6 +94,26 @@ def three_month_price_frame() -> PriceFrame:
         index=index,
     )
     return PriceFrame(asset=spy_asset(), data=data, adjusted=False, source="raw-test")
+
+
+def trending_price_frame() -> PriceFrame:
+    index = pd.bdate_range("2024-01-02", periods=8)
+    close = [100.0, 101.0, 102.0, 103.0, 80.0, 79.0, 78.0, 90.0]
+    data = pd.DataFrame(
+        {"open": close, "high": close, "low": close, "close": close, "volume": 1_000},
+        index=index,
+    )
+    return PriceFrame(asset=spy_asset(), data=data, adjusted=False, source="raw-test")
+
+
+def trending_qqq_price_frame() -> PriceFrame:
+    index = pd.bdate_range("2024-01-02", periods=8)
+    close = [50.0, 51.0, 52.0, 53.0, 41.0, 40.0, 39.0, 45.0]
+    data = pd.DataFrame(
+        {"open": close, "high": close, "low": close, "close": close, "volume": 1_000},
+        index=index,
+    )
+    return PriceFrame(asset=qqq_asset(), data=data, adjusted=False, source="raw-test")
 
 
 def three_month_qqq_price_frame() -> PriceFrame:
@@ -264,6 +305,61 @@ def test_dca_leveraged_records_contributions_and_target_debt():
     assert result.ledger.quantity == pytest.approx(39)
     assert result.ledger.debt == pytest.approx(900)
     assert result.equity_curve.iloc[-1]["total_equity"] == pytest.approx(3_000)
+
+
+def test_dynamic_policy_moves_to_risk_off_after_crash():
+    prices = pd.Series(
+        [100.0, 102.0, 104.0, 80.0],
+        index=pd.bdate_range("2024-01-02", periods=4),
+    )
+
+    decision = decide_dynamic_leverage(
+        decision_date=prices.index[-1],
+        signal_prices=prices,
+        dynamic=dynamic_config(),
+        leverage=leverage_config(),
+        safety_buffer=0.50,
+    )
+
+    assert decision.target_leverage == pytest.approx(1.0)
+    assert decision.regime == "crash_guard"
+
+
+def test_dynamic_buy_hold_records_policy_and_changes_target():
+    result = run_dynamic_buy_hold_leveraged(
+        price_frame=trending_price_frame(),
+        dividend_frame=empty_dividend_frame(),
+        cost_model=zero_cost_model(),
+        initial_cash=1_000,
+        leverage=leverage_config(),
+        dynamic=dynamic_config(),
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
+    )
+
+    assert result.strategy == "dynamic_buy_hold_leveraged"
+    assert not result.policy_decisions.empty
+    assert 1.0 in set(result.policy_decisions["target_leverage"])
+    assert 1.3 in set(result.policy_decisions["target_leverage"])
+
+
+def test_dynamic_rebalance_runner_records_policy():
+    result = run_dynamic_rebalance_leveraged(
+        price_frames=[trending_price_frame(), trending_qqq_price_frame()],
+        dividend_frames=[empty_dividend_frame(), empty_dividend_frame(qqq_asset())],
+        cost_model=zero_cost_model(),
+        initial_cash=10_000,
+        target_weights={"SPY": 0.60, "QQQ": 0.40},
+        frequency="monthly",
+        leverage=leverage_config(),
+        dynamic=dynamic_config(),
+        dividend_mode=DividendMode.CASH,
+        withholding_rate=0.30,
+    )
+
+    assert result.strategy == "dynamic_rebalance_leveraged"
+    assert not result.policy_decisions.empty
+    assert result.policy_decisions["target_leverage"].min() == pytest.approx(1.0)
 
 
 def test_buy_hold_leveraged_runner_applies_dividends():

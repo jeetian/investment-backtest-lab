@@ -68,6 +68,18 @@ leverage:
   min_safety_buffer: 0.25
   deleverage_to: 1.10
 
+dynamic_leverage:
+  enabled: true
+  trend_window: 200
+  volatility_window: 63
+  high_volatility: 0.25
+  drawdown_guard: -0.10
+  crash_guard: -0.20
+  risk_on_leverage: 1.30
+  neutral_leverage: 1.10
+  risk_off_leverage: 1.00
+  safety_buffer_guard: 0.30
+
 cost_model:
   tw:
     commission_rate: 0.001425

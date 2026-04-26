@@ -20,3 +20,6 @@ def test_load_mvp_config():
     assert config.leverage.kind == LeverageKind.MARGIN_LOAN
     assert config.leverage.target_leverage == 1.30
     assert config.leverage.maintenance_requirement == 0.35
+    assert config.dynamic_leverage.enabled is True
+    assert config.dynamic_leverage.trend_window == 200
+    assert config.dynamic_leverage.risk_off_leverage == 1.00

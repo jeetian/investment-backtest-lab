@@ -12,6 +12,9 @@ from investment_backtest_lab.data import MarketDataLoader
 from investment_backtest_lab.leverage_reports import (
     run_buy_hold_leveraged,
     run_dca_leveraged,
+    run_dynamic_buy_hold_leveraged,
+    run_dynamic_dca_leveraged,
+    run_dynamic_rebalance_leveraged,
     run_rebalance_leveraged,
     write_leverage_report,
 )
@@ -33,14 +36,25 @@ def main() -> None:
     parser.add_argument(
         "--strategies",
         nargs="+",
-        default=["buy_hold_leveraged", "dca_leveraged", "rebalance_leveraged"],
+        default=[
+            "buy_hold_leveraged",
+            "dca_leveraged",
+            "rebalance_leveraged",
+            "dynamic_buy_hold_leveraged",
+            "dynamic_dca_leveraged",
+            "dynamic_rebalance_leveraged",
+        ],
         choices=[
             "buy_hold",
             "dca",
             "rebalance",
+            "dynamic",
             "buy_hold_leveraged",
             "dca_leveraged",
             "rebalance_leveraged",
+            "dynamic_buy_hold_leveraged",
+            "dynamic_dca_leveraged",
+            "dynamic_rebalance_leveraged",
         ],
     )
     parser.add_argument(
@@ -120,6 +134,33 @@ def main() -> None:
                         withholding_rate=config.tax.us.dividend_withholding_rate,
                     )
                 )
+            if "dynamic_buy_hold_leveraged" in normalized_strategies:
+                results.append(
+                    run_dynamic_buy_hold_leveraged(
+                        price_frame=price_frame,
+                        dividend_frame=dividend_frame,
+                        cost_model=cost_model,
+                        initial_cash=config.ledger.initial_cash,
+                        leverage=config.leverage,
+                        dynamic=config.dynamic_leverage,
+                        dividend_mode=dividend_mode,
+                        withholding_rate=config.tax.us.dividend_withholding_rate,
+                    )
+                )
+            if "dynamic_dca_leveraged" in normalized_strategies:
+                results.append(
+                    run_dynamic_dca_leveraged(
+                        price_frame=price_frame,
+                        dividend_frame=dividend_frame,
+                        cost_model=cost_model,
+                        contribution=config.dca.contribution,
+                        frequency=config.dca.frequency,
+                        leverage=config.leverage,
+                        dynamic=config.dynamic_leverage,
+                        dividend_mode=dividend_mode,
+                        withholding_rate=config.tax.us.dividend_withholding_rate,
+                    )
+                )
         if "rebalance_leveraged" in normalized_strategies:
             target_weights = selected_target_weights(
                 config.rebalance.target_weights,
@@ -134,6 +175,25 @@ def main() -> None:
                     target_weights=target_weights,
                     frequency=config.rebalance.frequency,
                     leverage=config.leverage,
+                    dividend_mode=dividend_mode,
+                    withholding_rate=config.tax.us.dividend_withholding_rate,
+                )
+            )
+        if "dynamic_rebalance_leveraged" in normalized_strategies:
+            target_weights = selected_target_weights(
+                config.rebalance.target_weights,
+                selected_assets,
+            )
+            results.append(
+                run_dynamic_rebalance_leveraged(
+                    price_frames=price_frames,
+                    dividend_frames=dividend_frames,
+                    cost_model=cost_model,
+                    initial_cash=config.ledger.initial_cash,
+                    target_weights=target_weights,
+                    frequency=config.rebalance.frequency,
+                    leverage=config.leverage,
+                    dynamic=config.dynamic_leverage,
                     dividend_mode=dividend_mode,
                     withholding_rate=config.tax.us.dividend_withholding_rate,
                 )
@@ -164,6 +224,7 @@ def main() -> None:
     print(f"Cash flows CSV:  {report.cash_flows_path}")
     print(f"Curve CSV:       {report.curves_path}")
     print(f"Positions CSV:   {report.positions_path}")
+    print(f"Policy CSV:      {report.policy_path}")
     print(f"HTML report:     {report.html_path}")
 
 
@@ -172,9 +233,13 @@ def normalize_strategies(strategies: list[str]) -> list[str]:
         "buy_hold": "buy_hold_leveraged",
         "dca": "dca_leveraged",
         "rebalance": "rebalance_leveraged",
+        "dynamic": "dynamic_rebalance_leveraged",
         "buy_hold_leveraged": "buy_hold_leveraged",
         "dca_leveraged": "dca_leveraged",
         "rebalance_leveraged": "rebalance_leveraged",
+        "dynamic_buy_hold_leveraged": "dynamic_buy_hold_leveraged",
+        "dynamic_dca_leveraged": "dynamic_dca_leveraged",
+        "dynamic_rebalance_leveraged": "dynamic_rebalance_leveraged",
     }
     return sorted({aliases[strategy] for strategy in strategies})
 
@@ -197,6 +262,11 @@ def build_report_context(
         "maintenance_requirement": f"{config.leverage.maintenance_requirement:.2%}",
         "min_safety_buffer": f"{config.leverage.min_safety_buffer:.2%}",
         "deleverage_to": f"{config.leverage.deleverage_to:.2f}x",
+        "dynamic_trend_window": config.dynamic_leverage.trend_window,
+        "dynamic_volatility_window": config.dynamic_leverage.volatility_window,
+        "dynamic_high_volatility": f"{config.dynamic_leverage.high_volatility:.2%}",
+        "dynamic_drawdown_guard": f"{config.dynamic_leverage.drawdown_guard:.2%}",
+        "dynamic_crash_guard": f"{config.dynamic_leverage.crash_guard:.2%}",
         "initial_cash": config.ledger.initial_cash,
         "dca_contribution": config.dca.contribution,
         "account_currency": config.ledger.account_currency,
@@ -271,6 +341,7 @@ def print_terminal_summary(metrics: pd.DataFrame, warnings: list[str]) -> None:
             "ticker",
             "strategy",
             "dividend_mode",
+            "avg_target_leverage",
             "ending_equity_usd",
             "simple_cash_return",
             "max_drawdown",
@@ -292,6 +363,7 @@ def print_terminal_summary(metrics: pd.DataFrame, warnings: list[str]) -> None:
         "gross_dividends",
         "withholding_tax",
         "final_debt",
+        "avg_target_leverage",
         "max_actual_leverage",
     ]:
         display[column] = display[column].map(format_number_or_blank)

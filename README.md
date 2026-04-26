@@ -38,7 +38,7 @@ uv run python scripts\cross_validate.py
 - FinMind live data smoke test：目前因未設定 `FINMIND_TOKEN` 而跳過
 - quickstart SPY/QQQ 結果檢視報表
 - 美股 account/portfolio ledger 核心、buy-and-hold、DCA、SPY/QQQ 再平衡 ledger 報表
-- 美股 ETF 輕槓桿 margin loan 風險模型：1.3x 目標槓桿、每日利息、股息/預扣稅、維持率、安全緩衝、自動降槓桿與 margin call audit trail
+- 美股 ETF 輕槓桿 margin loan 風險模型：固定/動態目標槓桿、每日利息、股息/預扣稅、維持率、安全緩衝、自動降槓桿與 margin call audit trail
 - git baseline commit 已建立，後續里程碑可回溯
 
 驗證結果：
@@ -58,7 +58,7 @@ uv run python scripts\cross_validate.py
 - `smoke_imports.py`: `pandas`、`vectorbt`、`bt`、`quantstats`、`yfinance`、`FinMind` 都顯示 `[OK]`
 - `run_prototype.py`: 會輸出均線策略摘要、DCA 摘要、Rolling 3Y CAGR
 - `analyze_ledger.py`: 會輸出 raw price + 股息 + 稅 + 成本 + DCA 現金流 + SPY/QQQ 再平衡的可審計 ledger 報表
-- `analyze_leverage.py`: 會輸出美股 ETF margin loan 借款、利息、股息/預扣稅、安全緩衝、降槓桿事件與風險報表
+- `analyze_leverage.py`: 會輸出美股 ETF margin loan 借款、利息、股息/預扣稅、動態槓桿 policy、安全緩衝、降槓桿事件與風險報表
 - `cross_validate.py`: 會用 synthetic 案例比對 ledger vs `vectorbt` / `bt`，並檢查 raw price + 股息再投入 vs adjusted total-return price
 
 ## 專案目標

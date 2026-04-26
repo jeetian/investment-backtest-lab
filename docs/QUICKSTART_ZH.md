@@ -12,7 +12,7 @@
 - 一次離線 prototype 結果：均線策略摘要、DCA 摘要、Rolling 3Y CAGR
 - 一次 yfinance live data 檢查：`SPY`、`QQQ`、`USDTWD=X`
 - 一份可審計的美股 ledger 報表：raw price、股息、稅、成本、DCA 現金流、USD/TWD
-- 一份美股 ETF 輕槓桿風險報表：margin loan、每日利息、安全緩衝、自動降槓桿
+- 一份美股 ETF 輕槓桿風險報表：margin loan、每日利息、動態槓桿 policy、安全緩衝、自動降槓桿
 
 ## 1. 1 分鐘確認環境
 
@@ -263,12 +263,14 @@ reports/leverage_spy_qqq_interest.csv
 reports/leverage_spy_qqq_dividends.csv
 reports/leverage_spy_qqq_events.csv
 reports/leverage_spy_qqq_curve.csv
+reports/leverage_spy_qqq_positions.csv
+reports/leverage_spy_qqq_policy.csv
 reports/leverage_spy_qqq.html
 ```
 
-先看 `metrics.csv` 或 HTML 裡的 `worst_safety_buffer`、`margin_call_count`、`forced_deleverage_count`、`interest_paid`、`gross_dividends`、`withholding_tax`。這份報表第一版用來確認「會不會太接近爆倉」，不是用來直接挑最高 CAGR。
+先看 `metrics.csv` 或 HTML 裡的 `worst_safety_buffer`、`margin_call_count`、`forced_deleverage_count`、`interest_paid`、`gross_dividends`、`withholding_tax`。再看 `policy.csv`，它會列出每天的 `target_leverage`、`regime` 與 `reason`，例如 `risk_on`、`neutral`、`trend_off`、`crash_guard`。這份報表第一版用來確認「會不會太接近爆倉」，不是用來直接挑最高 CAGR。
 
-目前 v1 支援 `buy_hold_leveraged`、`dca_leveraged` 與 SPY/QQQ 60/40 的 `rebalance_leveraged`。槓桿 ETF 產品先當一般價格序列，不混入 margin loan 借款模型。
+目前 v1 支援固定槓桿的 `buy_hold_leveraged`、`dca_leveraged`、`rebalance_leveraged`，也支援動態槓桿的 `dynamic_buy_hold_leveraged`、`dynamic_dca_leveraged`、`dynamic_rebalance_leveraged`。槓桿 ETF 產品先當一般價格序列，不混入 margin loan 借款模型。
 
 ## 9. 設定 FinMind Token
 

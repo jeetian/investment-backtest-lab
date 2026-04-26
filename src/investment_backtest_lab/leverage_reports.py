@@ -18,7 +18,19 @@ from investment_backtest_lab.ledger_reports import (
     rebalance_schedule_dates,
 )
 from investment_backtest_lab.leverage import MarginLoanLedger, PortfolioMarginLedger
-from investment_backtest_lab.models import DividendFrame, DividendMode, LeverageConfig, PriceFrame
+from investment_backtest_lab.leverage_policy import (
+    DynamicLeverageDecision,
+    decide_dynamic_leverage,
+    decisions_to_frame,
+    weighted_signal_series,
+)
+from investment_backtest_lab.models import (
+    DividendFrame,
+    DividendMode,
+    DynamicLeverageConfig,
+    LeverageConfig,
+    PriceFrame,
+)
 from investment_backtest_lab.reports import max_drawdown, performance_summary
 
 
@@ -30,6 +42,7 @@ class LeveragedRunResult:
     ledger: MarginLoanLedger | PortfolioMarginLedger
     equity_curve: pd.DataFrame
     aligned_dividends: pd.DataFrame
+    policy_decisions: pd.DataFrame
     price_source: str
     dividend_source: str
     total_contributed: float
@@ -46,6 +59,7 @@ class LeverageReportResult:
     cash_flows: pd.DataFrame
     curves: pd.DataFrame
     positions: pd.DataFrame
+    policy: pd.DataFrame
     warnings: list[str]
     markdown_path: Path
     metrics_path: Path
@@ -56,6 +70,7 @@ class LeverageReportResult:
     cash_flows_path: Path
     curves_path: Path
     positions_path: Path
+    policy_path: Path
     html_path: Path
 
 
@@ -95,6 +110,11 @@ def run_buy_hold_leveraged(
         dividend_mode=dividend_mode,
         withholding_rate=withholding_rate,
     )
+    policy_decisions = _static_policy_frame(
+        prices.index,
+        target_leverage=leverage.target_leverage,
+        strategy="buy_hold_leveraged",
+    )
     return LeveragedRunResult(
         ticker=price_frame.asset.ticker,
         strategy="buy_hold_leveraged",
@@ -102,6 +122,7 @@ def run_buy_hold_leveraged(
         ledger=ledger,
         equity_curve=ledger.equity_curve,
         aligned_dividends=aligned_dividends,
+        policy_decisions=policy_decisions,
         price_source=price_frame.source,
         dividend_source=dividend_frame.source,
         total_contributed=float(initial_cash),
@@ -172,6 +193,11 @@ def run_dca_leveraged(
         ledger.check_margin_risk(current_date, price=current_price)
         ledger.snapshot(current_date, price=current_price)
         previous_date = current_date
+    policy_frame = _static_policy_frame(
+        prices.index,
+        target_leverage=leverage.target_leverage,
+        strategy="dca_leveraged",
+    )
 
     return LeveragedRunResult(
         ticker=price_frame.asset.ticker,
@@ -180,6 +206,7 @@ def run_dca_leveraged(
         ledger=ledger,
         equity_curve=ledger.equity_curve,
         aligned_dividends=aligned_dividends,
+        policy_decisions=policy_frame,
         price_source=price_frame.source,
         dividend_source=dividend_frame.source,
         total_contributed=float(total_contributed),
@@ -261,6 +288,11 @@ def run_rebalance_leveraged(
         ledger.check_margin_risk(current_date, prices=current_prices)
         ledger.snapshot(current_date, prices=current_prices)
         previous_date = current_date
+    policy_frame = _static_policy_frame(
+        prices.index,
+        target_leverage=leverage.target_leverage,
+        strategy="rebalance_leveraged",
+    )
 
     return LeveragedRunResult(
         ticker="_".join(tickers),
@@ -269,6 +301,234 @@ def run_rebalance_leveraged(
         ledger=ledger,
         equity_curve=ledger.equity_curve,
         aligned_dividends=aligned_dividend_frame,
+        policy_decisions=policy_frame,
+        price_source="; ".join(f"{frame.asset.ticker}:{frame.source}" for frame in price_frames),
+        dividend_source="; ".join(
+            f"{frame.asset.ticker}:{frame.source}" for frame in dividend_frames
+        ),
+        total_contributed=float(initial_cash),
+        warnings=tuple(warnings),
+    )
+
+
+def run_dynamic_buy_hold_leveraged(
+    *,
+    price_frame: PriceFrame,
+    dividend_frame: DividendFrame,
+    cost_model: CostModel,
+    initial_cash: float,
+    leverage: LeverageConfig,
+    dynamic: DynamicLeverageConfig,
+    dividend_mode: DividendMode | str,
+    withholding_rate: float,
+) -> LeveragedRunResult:
+    dividend_mode = DividendMode(dividend_mode)
+    prices = price_frame.close().dropna().sort_index()
+    if prices.empty:
+        raise ValueError("Dynamic leveraged buy-and-hold requires non-empty price data.")
+
+    warnings = _price_warnings(price_frame)
+    ledger = MarginLoanLedger(
+        price_frame.asset,
+        starting_cash=initial_cash,
+        leverage=leverage,
+        cost_model=cost_model,
+        account_currency=price_frame.asset.currency,
+    )
+    aligned_dividends, align_warnings = align_dividends_to_trading_dates(
+        dividend_frame.data,
+        prices.index,
+    )
+    warnings.extend(f"{price_frame.asset.ticker}: {warning}" for warning in align_warnings)
+    dividends_by_date = _dividends_by_effective_date(aligned_dividends)
+    policy_decisions = _run_dynamic_single_asset_path(
+        ledger,
+        prices,
+        signal_prices=prices,
+        dynamic=dynamic,
+        dividends_by_date=dividends_by_date,
+        dividend_mode=dividend_mode,
+        withholding_rate=withholding_rate,
+        contribution_dates=set(),
+        contribution=0.0,
+    )
+    return LeveragedRunResult(
+        ticker=price_frame.asset.ticker,
+        strategy="dynamic_buy_hold_leveraged",
+        dividend_mode=dividend_mode,
+        ledger=ledger,
+        equity_curve=ledger.equity_curve,
+        aligned_dividends=aligned_dividends,
+        policy_decisions=decisions_to_frame(policy_decisions),
+        price_source=price_frame.source,
+        dividend_source=dividend_frame.source,
+        total_contributed=float(initial_cash),
+        warnings=tuple(warnings),
+    )
+
+
+def run_dynamic_dca_leveraged(
+    *,
+    price_frame: PriceFrame,
+    dividend_frame: DividendFrame,
+    cost_model: CostModel,
+    contribution: float,
+    frequency: str,
+    leverage: LeverageConfig,
+    dynamic: DynamicLeverageConfig,
+    dividend_mode: DividendMode | str,
+    withholding_rate: float,
+) -> LeveragedRunResult:
+    dividend_mode = DividendMode(dividend_mode)
+    prices = price_frame.close().dropna().sort_index()
+    if prices.empty:
+        raise ValueError("Dynamic leveraged DCA requires non-empty price data.")
+
+    warnings = _price_warnings(price_frame)
+    ledger = MarginLoanLedger(
+        price_frame.asset,
+        starting_cash=0.0,
+        leverage=leverage,
+        cost_model=cost_model,
+        account_currency=price_frame.asset.currency,
+    )
+    aligned_dividends, align_warnings = align_dividends_to_trading_dates(
+        dividend_frame.data,
+        prices.index,
+    )
+    warnings.extend(f"{price_frame.asset.ticker}: {warning}" for warning in align_warnings)
+    dividends_by_date = _dividends_by_effective_date(aligned_dividends)
+    contribution_dates = dca_contribution_dates(prices.index, frequency=frequency)
+    policy_decisions = _run_dynamic_single_asset_path(
+        ledger,
+        prices,
+        signal_prices=prices,
+        dynamic=dynamic,
+        dividends_by_date=dividends_by_date,
+        dividend_mode=dividend_mode,
+        withholding_rate=withholding_rate,
+        contribution_dates=contribution_dates,
+        contribution=contribution,
+    )
+    total_contributed = len(contribution_dates) * float(contribution)
+    return LeveragedRunResult(
+        ticker=price_frame.asset.ticker,
+        strategy="dynamic_dca_leveraged",
+        dividend_mode=dividend_mode,
+        ledger=ledger,
+        equity_curve=ledger.equity_curve,
+        aligned_dividends=aligned_dividends,
+        policy_decisions=decisions_to_frame(policy_decisions),
+        price_source=price_frame.source,
+        dividend_source=dividend_frame.source,
+        total_contributed=float(total_contributed),
+        warnings=tuple(warnings),
+    )
+
+
+def run_dynamic_rebalance_leveraged(
+    *,
+    price_frames: list[PriceFrame],
+    dividend_frames: list[DividendFrame],
+    cost_model: CostModel,
+    initial_cash: float,
+    target_weights: dict[str, float],
+    frequency: str,
+    leverage: LeverageConfig,
+    dynamic: DynamicLeverageConfig,
+    dividend_mode: DividendMode | str,
+    withholding_rate: float,
+) -> LeveragedRunResult:
+    dividend_mode = DividendMode(dividend_mode)
+    if len(price_frames) < 2:
+        raise ValueError("Dynamic leveraged rebalance requires at least two price frames.")
+    if len(price_frames) != len(dividend_frames):
+        raise ValueError("price_frames and dividend_frames must have the same length.")
+    tickers = [frame.asset.ticker for frame in price_frames]
+    prices = pd.concat([frame.close() for frame in price_frames], axis=1).dropna().sort_index()
+    if prices.empty:
+        raise ValueError("Dynamic leveraged rebalance requires overlapping price data.")
+
+    warnings: list[str] = []
+    for frame in price_frames:
+        warnings.extend(_price_warnings(frame))
+    aligned_dividends = []
+    for frame in dividend_frames:
+        aligned, align_warnings = align_dividends_to_trading_dates(frame.data, prices.index)
+        if not aligned.empty:
+            aligned = aligned.copy()
+            aligned.insert(0, "asset", frame.asset.ticker)
+            aligned_dividends.append(aligned)
+        warnings.extend(f"{frame.asset.ticker}: {warning}" for warning in align_warnings)
+    aligned_dividend_frame = (
+        pd.concat(aligned_dividends, ignore_index=True)
+        if aligned_dividends
+        else pd.DataFrame()
+    )
+    dividends_by_date = _portfolio_dividends_by_effective_date(aligned_dividend_frame)
+    ledger = PortfolioMarginLedger(
+        [frame.asset for frame in price_frames],
+        starting_cash=initial_cash,
+        leverage=leverage,
+        cost_model=cost_model,
+        account_currency=price_frames[0].asset.currency,
+        portfolio_label="_".join(tickers),
+    )
+    policy_signal = weighted_signal_series(prices, target_weights)
+    schedule_dates = rebalance_schedule_dates(prices.index, frequency=frequency)
+    policy_decisions: list[DynamicLeverageDecision] = []
+    previous_date: pd.Timestamp | None = None
+    previous_target: float | None = None
+    for current_date, row in prices.iterrows():
+        current_date = pd.Timestamp(current_date)
+        current_prices = {ticker: float(row[ticker]) for ticker in tickers}
+        if previous_date is not None:
+            days = max(1, (current_date - previous_date).days)
+            ledger.accrue_interest(current_date, days=days)
+        _apply_portfolio_dividends(
+            ledger,
+            current_date=current_date,
+            current_prices=current_prices,
+            rows=dividends_by_date.get(current_date, pd.DataFrame()),
+            dividend_mode=dividend_mode,
+            withholding_rate=withholding_rate,
+        )
+        safety_buffer = _portfolio_safety_buffer(ledger, current_prices)
+        decision = decide_dynamic_leverage(
+            decision_date=current_date,
+            signal_prices=policy_signal,
+            dynamic=dynamic,
+            leverage=leverage,
+            safety_buffer=safety_buffer,
+        )
+        policy_decisions.append(decision)
+        should_rebalance = (
+            previous_date is None
+            or current_date in schedule_dates
+            or previous_target is None
+            or abs(decision.target_leverage - previous_target) > 1e-9
+        )
+        if should_rebalance:
+            ledger.rebalance_to_weights(
+                current_date,
+                prices=current_prices,
+                target_weights=target_weights,
+                target_leverage=decision.target_leverage,
+                note=f"dynamic policy: {decision.regime}; {decision.reason}",
+            )
+        ledger.check_margin_risk(current_date, prices=current_prices)
+        ledger.snapshot(current_date, prices=current_prices)
+        previous_date = current_date
+        previous_target = decision.target_leverage
+
+    return LeveragedRunResult(
+        ticker="_".join(tickers),
+        strategy="dynamic_rebalance_leveraged",
+        dividend_mode=dividend_mode,
+        ledger=ledger,
+        equity_curve=ledger.equity_curve,
+        aligned_dividends=aligned_dividend_frame,
+        policy_decisions=decisions_to_frame(policy_decisions),
         price_source="; ".join(f"{frame.asset.ticker}:{frame.source}" for frame in price_frames),
         dividend_source="; ".join(
             f"{frame.asset.ticker}:{frame.source}" for frame in dividend_frames
@@ -298,6 +558,7 @@ def write_leverage_report(
     cash_flows = _collect_frames(results, "cash_flows")
     curves = _collect_curves(results, usd_twd=usd_twd, base_currency=base_currency)
     positions = _collect_positions(results)
+    policy = _collect_policy(results)
 
     prefix = f"leverage_{slug}"
     metrics_path = output_dir / f"{prefix}_metrics.csv"
@@ -308,6 +569,7 @@ def write_leverage_report(
     cash_flows_path = output_dir / f"{prefix}_cash_flows.csv"
     curves_path = output_dir / f"{prefix}_curve.csv"
     positions_path = output_dir / f"{prefix}_positions.csv"
+    policy_path = output_dir / f"{prefix}_policy.csv"
     markdown_path = output_dir / f"{prefix}.md"
     html_path = output_dir / f"{prefix}.html"
 
@@ -319,6 +581,7 @@ def write_leverage_report(
     cash_flows.to_csv(cash_flows_path, index=False)
     curves.to_csv(curves_path, index=False)
     positions.to_csv(positions_path, index=False)
+    policy.to_csv(policy_path, index=False)
 
     markdown_path.write_text(
         _render_markdown(
@@ -335,6 +598,7 @@ def write_leverage_report(
                 "cash_flows": cash_flows_path,
                 "curve": curves_path,
                 "positions": positions_path,
+                "policy": policy_path,
                 "html": html_path,
             },
         ),
@@ -355,6 +619,7 @@ def write_leverage_report(
                 "cash_flows": cash_flows_path,
                 "curve": curves_path,
                 "positions": positions_path,
+                "policy": policy_path,
             },
         ),
         encoding="utf-8",
@@ -369,6 +634,7 @@ def write_leverage_report(
         cash_flows=cash_flows,
         curves=curves,
         positions=positions,
+        policy=policy,
         warnings=warnings,
         markdown_path=markdown_path,
         metrics_path=metrics_path,
@@ -379,6 +645,7 @@ def write_leverage_report(
         cash_flows_path=cash_flows_path,
         curves_path=curves_path,
         positions_path=positions_path,
+        policy_path=policy_path,
         html_path=html_path,
     )
 
@@ -411,6 +678,101 @@ def _run_fixed_target_leverage_path(
         ledger.check_margin_risk(current_date, price=current_price)
         ledger.snapshot(current_date, price=current_price)
         previous_date = current_date
+
+
+def _run_dynamic_single_asset_path(
+    ledger: MarginLoanLedger,
+    prices: pd.Series,
+    *,
+    signal_prices: pd.Series,
+    dynamic: DynamicLeverageConfig,
+    dividends_by_date: dict[pd.Timestamp, pd.DataFrame],
+    dividend_mode: DividendMode,
+    withholding_rate: float,
+    contribution_dates: set[pd.Timestamp],
+    contribution: float,
+) -> list[DynamicLeverageDecision]:
+    previous_date: pd.Timestamp | None = None
+    policy_decisions: list[DynamicLeverageDecision] = []
+    for current_date, price in prices.items():
+        current_date = pd.Timestamp(current_date)
+        current_price = float(price)
+        if previous_date is not None:
+            days = max(1, (current_date - previous_date).days)
+            ledger.accrue_interest(current_date, days=days)
+        _apply_single_asset_dividends(
+            ledger,
+            current_date=current_date,
+            current_price=current_price,
+            rows=dividends_by_date.get(current_date, pd.DataFrame()),
+            dividend_mode=dividend_mode,
+            withholding_rate=withholding_rate,
+        )
+        if current_date in contribution_dates:
+            ledger.deposit(
+                current_date,
+                amount=contribution,
+                note="dynamic leveraged DCA contribution",
+            )
+        decision = decide_dynamic_leverage(
+            decision_date=current_date,
+            signal_prices=signal_prices,
+            dynamic=dynamic,
+            leverage=ledger.leverage,
+            safety_buffer=_single_asset_safety_buffer(ledger, current_price),
+        )
+        policy_decisions.append(decision)
+        ledger.rebalance_to_target_leverage(
+            current_date,
+            price=current_price,
+            target_leverage=decision.target_leverage,
+            note=f"dynamic policy: {decision.regime}; {decision.reason}",
+        )
+        ledger.check_margin_risk(current_date, price=current_price)
+        ledger.snapshot(current_date, price=current_price)
+        previous_date = current_date
+    return policy_decisions
+
+
+def _single_asset_safety_buffer(ledger: MarginLoanLedger, price: float) -> float | None:
+    market_value = ledger.market_value(price)
+    if market_value <= 0:
+        return None
+    equity = ledger.current_equity(price)
+    return equity / market_value - ledger.leverage.maintenance_requirement
+
+
+def _portfolio_safety_buffer(
+    ledger: PortfolioMarginLedger,
+    prices: dict[str, float],
+) -> float | None:
+    market_value = ledger.market_value(prices)
+    if market_value <= 0:
+        return None
+    equity = ledger.current_equity(prices)
+    return equity / market_value - ledger.leverage.maintenance_requirement
+
+
+def _static_policy_frame(
+    index: pd.Index,
+    *,
+    target_leverage: float,
+    strategy: str,
+) -> pd.DataFrame:
+    dates = pd.DatetimeIndex(index).sort_values()
+    return pd.DataFrame(
+        {
+            "date": [pd.Timestamp(date).date().isoformat() for date in dates],
+            "target_leverage": target_leverage,
+            "regime": "static",
+            "reason": strategy,
+            "price": np.nan,
+            "trend_average": np.nan,
+            "drawdown": np.nan,
+            "annualized_volatility": np.nan,
+            "safety_buffer": np.nan,
+        }
+    )
 
 
 def _dividends_by_effective_date(
@@ -526,12 +888,16 @@ def _build_metrics(
             ending_equity / total_contributed - 1.0 if total_contributed > 0 else np.nan
         )
         twd_values = _twd_values(curve, result, usd_twd, base_currency)
+        policy_targets = result.policy_decisions["target_leverage"].astype(float)
         rows.append(
             {
                 "ticker": result.ticker,
                 "strategy": result.strategy,
                 "dividend_mode": result.dividend_mode.value,
                 "target_leverage": result.ledger.leverage.target_leverage,
+                "avg_target_leverage": float(policy_targets.mean()),
+                "min_target_leverage": float(policy_targets.min()),
+                "max_target_leverage": float(policy_targets.max()),
                 "max_leverage_allowed": result.ledger.leverage.max_leverage,
                 "annual_borrow_rate": result.ledger.leverage.annual_borrow_rate,
                 "maintenance_requirement": result.ledger.leverage.maintenance_requirement,
@@ -650,6 +1016,20 @@ def _collect_positions(results: list[LeveragedRunResult]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def _collect_policy(results: list[LeveragedRunResult]) -> pd.DataFrame:
+    frames = []
+    for result in results:
+        frame = result.policy_decisions
+        if frame.empty:
+            continue
+        frame = frame.copy()
+        frame.insert(0, "ticker", result.ticker)
+        frame.insert(1, "strategy", result.strategy)
+        frame.insert(2, "dividend_mode", result.dividend_mode.value)
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def _curve_with_datetime(frame: pd.DataFrame) -> pd.DataFrame:
     curve = frame.copy()
     if curve.empty:
@@ -682,6 +1062,9 @@ def _render_markdown(
         f"- 借款年利率: {report_context.get('annual_borrow_rate')}",
         f"- 維持率: {report_context.get('maintenance_requirement')}",
         f"- 安全緩衝門檻: {report_context.get('min_safety_buffer')}",
+        f"- 動態趨勢窗口: {report_context.get('dynamic_trend_window')}",
+        f"- 動態波動窗口: {report_context.get('dynamic_volatility_window')}",
+        f"- 動態 crash guard: {report_context.get('dynamic_crash_guard')}",
         "",
         "## 關鍵指標",
         "",
@@ -816,6 +1199,10 @@ def _render_html(
       {_setting_tile("維持率", str(report_context.get("maintenance_requirement")))}
       {_setting_tile("安全緩衝門檻", str(report_context.get("min_safety_buffer")))}
       {_setting_tile("降槓桿目標", str(report_context.get("deleverage_to")))}
+      {_setting_tile("動態趨勢窗口", str(report_context.get("dynamic_trend_window", "")))}
+      {_setting_tile("動態波動窗口", str(report_context.get("dynamic_volatility_window", "")))}
+      {_setting_tile("高波動門檻", str(report_context.get("dynamic_high_volatility", "")))}
+      {_setting_tile("Crash Guard", str(report_context.get("dynamic_crash_guard", "")))}
     </div>
   </section>
   <section>
@@ -897,6 +1284,9 @@ def _render_charts(curves: pd.DataFrame) -> str:
 __all__ = [
     "LeverageReportResult",
     "LeveragedRunResult",
+    "run_dynamic_buy_hold_leveraged",
+    "run_dynamic_dca_leveraged",
+    "run_dynamic_rebalance_leveraged",
     "run_buy_hold_leveraged",
     "run_dca_leveraged",
     "run_rebalance_leveraged",

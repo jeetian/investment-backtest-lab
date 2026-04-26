@@ -177,6 +177,36 @@ class LeverageConfig:
 
 
 @dataclass(frozen=True)
+class DynamicLeverageConfig:
+    enabled: bool = True
+    trend_window: int = 200
+    volatility_window: int = 63
+    high_volatility: float = 0.25
+    drawdown_guard: float = -0.10
+    crash_guard: float = -0.20
+    risk_on_leverage: float = 1.30
+    neutral_leverage: float = 1.10
+    risk_off_leverage: float = 1.00
+    safety_buffer_guard: float = 0.30
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> DynamicLeverageConfig:
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            trend_window=int(data.get("trend_window", 200)),
+            volatility_window=int(data.get("volatility_window", 63)),
+            high_volatility=float(data.get("high_volatility", 0.25)),
+            drawdown_guard=float(data.get("drawdown_guard", -0.10)),
+            crash_guard=float(data.get("crash_guard", -0.20)),
+            risk_on_leverage=float(data.get("risk_on_leverage", 1.30)),
+            neutral_leverage=float(data.get("neutral_leverage", 1.10)),
+            risk_off_leverage=float(data.get("risk_off_leverage", 1.00)),
+            safety_buffer_guard=float(data.get("safety_buffer_guard", 0.30)),
+        )
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     universe: list[AssetSpec]
     start_date: date
@@ -191,6 +221,7 @@ class BacktestConfig:
     dividend: DividendConfig = field(default_factory=DividendConfig)
     ledger: LedgerConfig = field(default_factory=LedgerConfig)
     leverage: LeverageConfig = field(default_factory=LeverageConfig)
+    dynamic_leverage: DynamicLeverageConfig = field(default_factory=DynamicLeverageConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BacktestConfig:
@@ -208,6 +239,7 @@ class BacktestConfig:
             dividend=DividendConfig.from_dict(data.get("dividend")),
             ledger=LedgerConfig.from_dict(data.get("ledger")),
             leverage=LeverageConfig.from_dict(data.get("leverage")),
+            dynamic_leverage=DynamicLeverageConfig.from_dict(data.get("dynamic_leverage")),
         )
 
 

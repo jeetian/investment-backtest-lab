@@ -39,8 +39,9 @@
 
 目前狀態：
 
-- 已新增美股 ETF margin loan v1，支援 buy_hold_leveraged、dca_leveraged 與 SPY/QQQ 60/40 rebalance_leveraged。
-- 下一步應加入槓桿策略 cross-tool / 手算情境驗證，以及動態降槓桿訊號。
+- 已新增美股 ETF margin loan v1，支援固定槓桿與動態槓桿：buy-hold、DCA、SPY/QQQ 60/40 rebalance。
+- 動態槓桿 v1 會用趨勢均線、回撤、波動度與安全緩衝決定 1.0x / 1.1x / 1.3x，並輸出每日 policy audit trail。
+- 下一步應加入槓桿策略 cross-tool / 手算情境驗證，以及參數掃描。
 - leveraged ETF product 先只作為一般價格序列資產，不與 margin loan 會計混用。
 
 ## Phase 3：台股、台灣 ETF、台灣基金

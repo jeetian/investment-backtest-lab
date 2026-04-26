@@ -62,6 +62,7 @@ def test_leverage_report_exports_margin_risk_outputs(tmp_path):
     assert report.events_path.exists()
     assert report.curves_path.exists()
     assert report.positions_path.exists()
+    assert report.policy_path.exists()
     assert {"target_leverage", "interest_paid", "worst_safety_buffer"}.issubset(
         report.metrics.columns
     )
@@ -71,6 +72,7 @@ def test_leverage_report_exports_margin_risk_outputs(tmp_path):
     assert "buy_hold_leveraged" in report.html_path.read_text(encoding="utf-8")
     assert "安全緩衝" in report.html_path.read_text(encoding="utf-8")
     assert "total_equity_twd" in report.curves.columns
+    assert "target_leverage" in report.policy.columns
 
 
 def price_frame() -> PriceFrame:
