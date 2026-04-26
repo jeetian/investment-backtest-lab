@@ -2423,7 +2423,7 @@ def _format_html_cell(value: Any) -> str:
 def _preferred_basis_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
     if metrics.empty or "basis" not in metrics.columns:
         return metrics.copy()
-    for basis in ["TWD", "USD"]:
+    for basis in ["USD", "TWD"]:
         preferred = metrics[metrics["basis"] == basis]
         if not preferred.empty:
             return preferred.copy()
