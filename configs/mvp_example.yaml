@@ -95,6 +95,10 @@ dynamic_leverage:
 leveraged_etf_lab:
   family: qqq
   initial_cash: 10000
+  dca_initial_cash: 10000
+  dca_contribution: 1000
+  cash_flow_mode: both
+  robust_ranking_enabled: true
   actual_start_date: "2011-01-01"
   synthetic_start_date: "1999-03-10"
   grid_step: 0.10

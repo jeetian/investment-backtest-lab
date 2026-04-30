@@ -234,6 +234,10 @@ def _default_leveraged_etf_products() -> dict[str, LeveragedETFProductConfig]:
 class LeveragedETFLabConfig:
     family: str = "qqq"
     initial_cash: float = 10_000.0
+    dca_initial_cash: float = 10_000.0
+    dca_contribution: float = 1_000.0
+    cash_flow_mode: str = "both"
+    robust_ranking_enabled: bool = True
     actual_start_date: str | None = "2011-01-01"
     synthetic_start_date: str | None = "1999-03-10"
     grid_step: float = 0.10
@@ -270,6 +274,10 @@ class LeveragedETFLabConfig:
         return cls(
             family=str(data.get("family", "qqq")).lower(),
             initial_cash=float(data.get("initial_cash", 10_000.0)),
+            dca_initial_cash=float(data.get("dca_initial_cash", 10_000.0)),
+            dca_contribution=float(data.get("dca_contribution", 1_000.0)),
+            cash_flow_mode=str(data.get("cash_flow_mode", "both")).lower(),
+            robust_ranking_enabled=bool(data.get("robust_ranking_enabled", True)),
             actual_start_date=(
                 None
                 if data.get("actual_start_date") is None

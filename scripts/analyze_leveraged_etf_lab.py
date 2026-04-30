@@ -26,6 +26,12 @@ def main() -> None:
     parser.add_argument("--family", default="qqq")
     parser.add_argument("--output-dir", default="reports")
     parser.add_argument(
+        "--cash-flow-mode",
+        choices=["lump_sum", "dca", "both"],
+        default=None,
+        help="Run lump-sum, DCA, or both cash-flow modes. Defaults to config.",
+    )
+    parser.add_argument(
         "--scan-mode",
         choices=["fast", "full"],
         default=None,
@@ -67,6 +73,7 @@ def main() -> None:
         products=products,
         lab_config=lab,
         scan_mode=scan_mode,
+        cash_flow_mode=args.cash_flow_mode,
     )
     result = write_leveraged_etf_lab_report(
         outputs=outputs,
@@ -76,6 +83,7 @@ def main() -> None:
     )
     print_terminal_summary(result.metrics)
     print(f"Scan mode:        {scan_mode}")
+    print(f"Cash flow mode:   {args.cash_flow_mode or lab.cash_flow_mode}")
     print(f"HTML report:      {result.html_path}")
     print(f"Metrics CSV:      {result.metrics_path}")
     print(f"Curves CSV:       {result.curves_path}")
@@ -136,16 +144,22 @@ def select_or_create_us_etf(universe: list[AssetSpec], ticker: str) -> AssetSpec
 def print_terminal_summary(metrics: pd.DataFrame) -> None:
     print("Leveraged ETF product lab summary")
     display = (
-        metrics.sort_values(["data_mode", "rank"])
-        .groupby("data_mode")
+        metrics.sort_values(["data_mode", "cash_flow_mode", "rank"])
+        .groupby(["data_mode", "cash_flow_mode"])
         .head(8)[
             [
                 "data_mode",
+                "cash_flow_mode",
                 "rank",
+                "robust_rank",
                 "scenario_label",
-                "total_return",
+                "total_contributed",
+                "ending_equity",
+                "simple_cash_return",
+                "xirr",
                 "cagr",
                 "max_drawdown",
+                "robust_score",
                 "calmar",
                 "sortino",
                 "risk_flag",
@@ -153,10 +167,12 @@ def print_terminal_summary(metrics: pd.DataFrame) -> None:
         ]
         .copy()
     )
-    for column in ["total_return", "cagr", "max_drawdown"]:
+    for column in ["simple_cash_return", "xirr", "cagr", "max_drawdown"]:
         display[column] = display[column].map(format_percent_or_blank)
-    for column in ["calmar", "sortino"]:
+    for column in ["calmar", "sortino", "robust_score"]:
         display[column] = display[column].map(format_number_or_blank)
+    for column in ["total_contributed", "ending_equity"]:
+        display[column] = display[column].map(format_money_or_blank)
     print(display.to_string(index=False))
 
 
@@ -178,6 +194,12 @@ def format_number_or_blank(value: object) -> str:
     if pd.isna(value):
         return ""
     return f"{float(value):.2f}"
+
+
+def format_money_or_blank(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    return f"{float(value):,.2f}"
 
 
 if __name__ == "__main__":

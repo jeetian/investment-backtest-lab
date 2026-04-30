@@ -13,6 +13,9 @@ from investment_backtest_lab.models import LeveragedETFLabConfig, LeveragedETFPr
 from investment_backtest_lab.reports import performance_summary
 
 CASH = "CASH"
+CASH_FLOW_LUMP_SUM = "lump_sum"
+CASH_FLOW_DCA = "dca"
+CASH_FLOW_BOTH = "both"
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,18 @@ def resolve_scan_mode(
     return scan_mode or "fast"
 
 
+def resolve_cash_flow_modes(cash_flow_mode: str | None) -> list[str]:
+    normalized = (cash_flow_mode or CASH_FLOW_BOTH).lower()
+    if normalized == CASH_FLOW_BOTH:
+        return [CASH_FLOW_LUMP_SUM, CASH_FLOW_DCA]
+    if normalized in {CASH_FLOW_LUMP_SUM, CASH_FLOW_DCA}:
+        return [normalized]
+    raise ValueError(
+        "cash_flow_mode must be 'lump_sum', 'dca', or 'both', "
+        f"got {cash_flow_mode!r}."
+    )
+
+
 def build_leveraged_etf_lab_outputs(
     *,
     actual_prices: pd.DataFrame,
@@ -91,8 +106,10 @@ def build_leveraged_etf_lab_outputs(
     products: list[ProductSpec],
     lab_config: LeveragedETFLabConfig,
     scan_mode: str = "full",
+    cash_flow_mode: str | None = None,
 ) -> LeveragedETFLabOutputs:
     product_map = {product.ticker: product for product in products}
+    cash_flow_modes = resolve_cash_flow_modes(cash_flow_mode or lab_config.cash_flow_mode)
     outputs: list[tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]] = []
     if not actual_prices.empty:
         outputs.append(
@@ -101,6 +118,7 @@ def build_leveraged_etf_lab_outputs(
                 data_mode="actual_etf",
                 products=products,
                 lab_config=lab_config,
+                cash_flow_modes=cash_flow_modes,
             )
         )
     if not synthetic_prices.empty:
@@ -110,6 +128,7 @@ def build_leveraged_etf_lab_outputs(
                 data_mode="synthetic_stress",
                 products=products,
                 lab_config=lab_config,
+                cash_flow_modes=cash_flow_modes,
             )
         )
     if not outputs:
@@ -118,7 +137,10 @@ def build_leveraged_etf_lab_outputs(
     metrics = pd.concat([item[0] for item in outputs], ignore_index=True)
     curves = pd.concat([item[1] for item in outputs], ignore_index=True)
     allocations = pd.concat([item[2] for item in outputs], ignore_index=True)
-    metrics = rank_metrics(metrics)
+    metrics = rank_metrics(
+        metrics,
+        robust_ranking_enabled=lab_config.robust_ranking_enabled,
+    )
     payload = build_compare_payload(
         metrics=metrics,
         curves=curves,
@@ -230,6 +252,8 @@ def simulate_weighted_strategy(
     initial_cash: float,
     rebalance_dates: set[pd.Timestamp] | None = None,
     rebalance_on_change: bool = False,
+    contribution_dates: set[pd.Timestamp] | None = None,
+    contribution_amount: float = 0.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     clean_prices = prices.dropna(how="any").astype(float).sort_index()
     if clean_prices.empty:
@@ -240,6 +264,7 @@ def simulate_weighted_strategy(
         list(clean_prices.columns),
     )
     schedule = set(rebalance_dates or set())
+    contribution_schedule = set(contribution_dates or set())
     dates = pd.DatetimeIndex(clean_prices.index)
     product_tickers = list(clean_prices.columns)
     price_array = clean_prices.to_numpy(dtype=float)
@@ -251,13 +276,17 @@ def simulate_weighted_strategy(
     asset_values = np.zeros(len(product_tickers), dtype=float)
     cash_value = 0.0
     current_target = np.zeros(len(weights.columns), dtype=float)
+    total_contributed = 0.0
     curve_rows: list[dict[str, Any]] = []
     allocation_rows: list[dict[str, Any]] = []
 
     for position, date in enumerate(dates):
         target = weight_array[position]
+        contribution = contribution_amount if date in contribution_schedule else 0.0
         if position == 0:
-            equity = float(initial_cash)
+            contribution += initial_cash
+            total_contributed += contribution
+            equity = float(contribution)
             asset_values, cash_value = _rebalance_values_array(
                 equity,
                 target,
@@ -275,16 +304,28 @@ def simulate_weighted_strategy(
         else:
             price_returns = price_array[position] / price_array[position - 1] - 1.0
             asset_values = asset_values * (1.0 + price_returns)
+            cash_value += contribution
+            total_contributed += contribution
             equity = float(asset_values.sum() + cash_value)
             target_changed = not np.allclose(target, current_target, atol=1e-10)
-            if date in schedule or (rebalance_on_change and target_changed):
+            should_rebalance = (
+                date in schedule
+                or contribution > 0
+                or (rebalance_on_change and target_changed)
+            )
+            if should_rebalance:
                 asset_values, cash_value = _rebalance_values_array(
                     equity,
                     target,
                     len(product_tickers),
                 )
                 current_target = target.copy()
-                reason = "scheduled rebalance" if date in schedule else "signal change"
+                if contribution > 0:
+                    reason = "contribution rebalance"
+                elif date in schedule:
+                    reason = "scheduled rebalance"
+                else:
+                    reason = "signal change"
                 allocation_rows.append(
                     _allocation_row_from_array(date, weights.columns, target, reason)
                 )
@@ -296,6 +337,8 @@ def simulate_weighted_strategy(
             {
                 "date": date,
                 "total_equity": equity,
+                "contribution": contribution,
+                "total_contributed": total_contributed,
                 "cash": cash_value,
                 "cash_weight": cash_value / equity if equity else np.nan,
                 "effective_product_leverage": effective_leverage,
@@ -307,23 +350,45 @@ def simulate_weighted_strategy(
         )
 
     curve = pd.DataFrame(curve_rows)
-    curve["drawdown"] = curve["total_equity"] / curve["total_equity"].cummax() - 1.0
+    curve["investment_return"] = _investment_returns_from_curve(curve)
+    curve["return_index"] = (1.0 + curve["investment_return"]).cumprod()
+    curve["drawdown"] = curve["return_index"] / curve["return_index"].cummax() - 1.0
     return curve, pd.DataFrame(allocation_rows)
 
 
-def rank_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
+def rank_metrics(
+    metrics: pd.DataFrame,
+    *,
+    robust_ranking_enabled: bool = True,
+) -> pd.DataFrame:
     ranked = metrics.copy()
+    if "cash_flow_mode" not in ranked.columns:
+        ranked["cash_flow_mode"] = CASH_FLOW_LUMP_SUM
     ranked["rank_score"] = ranked.apply(_risk_adjusted_score, axis=1)
+    ranked["robust_score"] = (
+        ranked.apply(_robust_score, axis=1) if robust_ranking_enabled else ranked["rank_score"]
+    )
     ranked["rank"] = (
         ranked.sort_values(
-            ["data_mode", "risk_failed", "rank_score", "calmar", "sortino"],
-            ascending=[True, True, False, False, False],
+            ["data_mode", "cash_flow_mode", "risk_failed", "rank_score", "calmar", "sortino"],
+            ascending=[True, True, True, False, False, False],
         )
-        .groupby("data_mode")
+        .groupby(["data_mode", "cash_flow_mode"])
         .cumcount()
         + 1
     )
-    return ranked.sort_values(["data_mode", "rank", "strategy_family"]).reset_index(drop=True)
+    ranked["robust_rank"] = (
+        ranked.sort_values(
+            ["data_mode", "cash_flow_mode", "risk_failed", "robust_score"],
+            ascending=[True, True, True, False],
+        )
+        .groupby(["data_mode", "cash_flow_mode"])
+        .cumcount()
+        + 1
+    )
+    return ranked.sort_values(
+        ["data_mode", "cash_flow_mode", "rank", "strategy_family"]
+    ).reset_index(drop=True)
 
 
 def build_compare_payload(
@@ -346,16 +411,16 @@ def build_compare_payload(
                 "short": str(metric["short_label"]),
                 "full": str(metric["scenario_label"]),
                 "data_mode": str(metric["data_mode"]),
+                "cash_flow_mode": str(metric["cash_flow_mode"]),
                 "strategy_family": str(metric["strategy_family"]),
                 "risk_flag": str(metric["risk_flag"]),
                 "default": bool(metric["default_selected"]),
                 "dates": [pd.Timestamp(date).date().isoformat() for date in group["date"]],
                 "series": {
                     "total_equity": _json_series(group["total_equity"]),
-                    "normalized_equity": _json_series(
-                        _normalized_series(group["total_equity"], start_value=10_000.0)
-                    ),
+                    "normalized_equity": _json_series(group["return_index"] * 10_000.0),
                     "drawdown": _json_series(group["drawdown"]),
+                    "total_contributed": _json_series(group["total_contributed"]),
                     "effective_product_leverage": _json_series(
                         group["effective_product_leverage"]
                     ),
@@ -372,11 +437,16 @@ def build_compare_payload(
         "metrics": {
             "total_equity": {"label": "淨資產", "axis": "USD", "format": "money"},
             "normalized_equity": {
-                "label": "標準化 10,000",
+                "label": "標準化 10,000（時間加權）",
                 "axis": "Normalized USD",
                 "format": "money",
             },
             "drawdown": {"label": "回撤", "axis": "Drawdown", "format": "percent"},
+            "total_contributed": {
+                "label": "累計投入",
+                "axis": "USD",
+                "format": "money",
+            },
             "effective_product_leverage": {
                 "label": "產品曝險倍數",
                 "axis": "Product leverage",
@@ -507,6 +577,7 @@ def render_leveraged_etf_lab_html(
         <p>
           這裡沒有 debt、margin call 或借款利息。QLD/TQQQ 是產品本身每日重設的
           2x/3x 暴露，風險重點是巨大回撤、波動耗損與長時間無法回到前高。
+          這不是投資建議；目前結果仍是策略候選，不是最佳策略定論。
         </p>
       </div>
       {_reading_steps()}
@@ -517,9 +588,12 @@ def render_leveraged_etf_lab_html(
       <div class="section-heading">
         <div>
           <p class="eyebrow">Decision Board</p>
-          <h2>風險調整排序</h2>
+          <h2>DCA 與穩健排名</h2>
         </div>
-        <p>排序以 Calmar / Sortino / Sharpe 與最大回撤為主，不用 CAGR 單獨決定最佳策略。</p>
+        <p>
+          Lump Sum 和 DCA 分開看；DCA 不用 CAGR 當主要判斷。
+          Robust Ranking 會懲罰壓測失敗、分段表現太差與修復期過長的策略。
+        </p>
       </div>
       <div class="notice-card warning-notice">
         <strong>重要限制</strong>
@@ -543,11 +617,17 @@ def render_leveraged_etf_lab_html(
         <p>
           Fast 模式用較粗權重格點快速探索；Full 模式使用完整 10% grid。
           Compare Lab 可以自由勾選策略疊圖，建議一次不要超過 6 條線。
+          標準化曲線使用時間加權路徑，只能看風險形狀，不能當本金報酬排名。
         </p>
       </div>
       <div class="compare-layout">
         <aside class="compare-control">
           <h3>可比較情境</h3>
+          <div class="cash-mode-filter" data-cash-flow-filter>
+            <button type="button" class="is-active" data-cash-flow-mode="all">全部</button>
+            <button type="button" data-cash-flow-mode="lump_sum">Lump Sum</button>
+            <button type="button" data-cash-flow-mode="dca">DCA</button>
+          </div>
           <div class="compare-checkbox-list">{_compare_checkboxes(payload["scenarios"])}</div>
         </aside>
         <div class="compare-main">
@@ -589,6 +669,7 @@ def _run_mode(
     data_mode: str,
     products: list[ProductSpec],
     lab_config: LeveragedETFLabConfig,
+    cash_flow_modes: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     clean_prices = prices[[product.ticker for product in products]].dropna(how="any")
     if clean_prices.empty:
@@ -598,40 +679,56 @@ def _run_mode(
     metric_rows: list[dict[str, Any]] = []
     curve_frames: list[pd.DataFrame] = []
     allocation_frames: list[pd.DataFrame] = []
+    monthly_contribution_dates = monthly_rebalance_dates(clean_prices.index)
 
     for scenario in scenarios:
-        curve, allocations = simulate_weighted_strategy(
-            prices=clean_prices,
-            target_weights=scenario["weights"],
-            product_leverages=product_leverages,
-            initial_cash=lab_config.initial_cash,
-            rebalance_dates=scenario["rebalance_dates"],
-            rebalance_on_change=bool(scenario["rebalance_on_change"]),
-        )
-        scenario_id = _scenario_id(data_mode, str(scenario["name"]))
-        label = str(scenario["label"])
-        curve.insert(0, "scenario_id", scenario_id)
-        curve.insert(1, "data_mode", data_mode)
-        curve.insert(2, "scenario_label", label)
-        curve.insert(3, "strategy_family", str(scenario["family"]))
-        allocations.insert(0, "scenario_id", scenario_id)
-        allocations.insert(1, "data_mode", data_mode)
-        allocations.insert(2, "scenario_label", label)
-        allocations.insert(3, "strategy_family", str(scenario["family"]))
-        metric_rows.append(
-            _metrics_row(
-                curve=curve,
-                data_mode=data_mode,
-                scenario_id=scenario_id,
-                scenario_label=label,
-                short_label=str(scenario["short_label"]),
-                strategy_family=str(scenario["family"]),
-                weights_summary=str(scenario["weights_summary"]),
-                lab_config=lab_config,
+        for cash_flow_mode in cash_flow_modes:
+            is_dca = cash_flow_mode == CASH_FLOW_DCA
+            curve, allocations = simulate_weighted_strategy(
+                prices=clean_prices,
+                target_weights=scenario["weights"],
+                product_leverages=product_leverages,
+                initial_cash=(
+                    lab_config.dca_initial_cash
+                    if is_dca
+                    else lab_config.initial_cash
+                ),
+                rebalance_dates=scenario["rebalance_dates"],
+                rebalance_on_change=bool(scenario["rebalance_on_change"]),
+                contribution_dates=monthly_contribution_dates if is_dca else None,
+                contribution_amount=lab_config.dca_contribution if is_dca else 0.0,
             )
-        )
-        curve_frames.append(curve)
-        allocation_frames.append(allocations)
+            scenario_id = _scenario_id(data_mode, f"{cash_flow_mode}_{scenario['name']}")
+            label = str(scenario["label"])
+            short_label = str(scenario["short_label"])
+            if is_dca:
+                label = f"DCA {label}"
+                short_label = f"DCA {short_label}"
+            curve.insert(0, "scenario_id", scenario_id)
+            curve.insert(1, "data_mode", data_mode)
+            curve.insert(2, "cash_flow_mode", cash_flow_mode)
+            curve.insert(3, "scenario_label", label)
+            curve.insert(4, "strategy_family", str(scenario["family"]))
+            allocations.insert(0, "scenario_id", scenario_id)
+            allocations.insert(1, "data_mode", data_mode)
+            allocations.insert(2, "cash_flow_mode", cash_flow_mode)
+            allocations.insert(3, "scenario_label", label)
+            allocations.insert(4, "strategy_family", str(scenario["family"]))
+            metric_rows.append(
+                _metrics_row(
+                    curve=curve,
+                    data_mode=data_mode,
+                    cash_flow_mode=cash_flow_mode,
+                    scenario_id=scenario_id,
+                    scenario_label=label,
+                    short_label=short_label,
+                    strategy_family=str(scenario["family"]),
+                    weights_summary=str(scenario["weights_summary"]),
+                    lab_config=lab_config,
+                )
+            )
+            curve_frames.append(curve)
+            allocation_frames.append(allocations)
 
     return (
         pd.DataFrame(metric_rows),
@@ -750,6 +847,44 @@ def monthly_rebalance_dates(index: pd.Index) -> set[pd.Timestamp]:
     return set(pd.Timestamp(value) for value in dates.groupby(trading_index.to_period("M")).first())
 
 
+def xirr(cash_flows: list[tuple[pd.Timestamp, float]]) -> float:
+    if not cash_flows:
+        return np.nan
+    ordered = sorted((pd.Timestamp(date), float(amount)) for date, amount in cash_flows)
+    amounts = [amount for _, amount in ordered]
+    if not any(amount < 0 for amount in amounts) or not any(amount > 0 for amount in amounts):
+        return np.nan
+    start = ordered[0][0]
+
+    def npv(rate: float) -> float:
+        return sum(
+            amount / ((1.0 + rate) ** ((date - start).days / 365.25))
+            for date, amount in ordered
+        )
+
+    low = -0.9999
+    high = 10.0
+    low_value = npv(low)
+    high_value = npv(high)
+    while low_value * high_value > 0 and high < 1_000:
+        high *= 2.0
+        high_value = npv(high)
+    if low_value * high_value > 0:
+        return np.nan
+    for _ in range(100):
+        middle = (low + high) / 2.0
+        middle_value = npv(middle)
+        if abs(middle_value) < 1e-7:
+            return middle
+        if low_value * middle_value <= 0:
+            high = middle
+            high_value = middle_value
+        else:
+            low = middle
+            low_value = middle_value
+    return (low + high) / 2.0
+
+
 def _constant_weights(
     index: pd.Index,
     product_tickers: list[str],
@@ -850,10 +985,20 @@ def _allocation_row_from_array(
     }
 
 
+def _investment_returns_from_curve(curve: pd.DataFrame) -> pd.Series:
+    equity = curve["total_equity"].astype(float)
+    contribution = curve["contribution"].astype(float)
+    previous_equity = equity.shift(1)
+    returns = (equity - contribution) / previous_equity - 1.0
+    returns.iloc[0] = 0.0
+    return returns.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
 def _metrics_row(
     *,
     curve: pd.DataFrame,
     data_mode: str,
+    cash_flow_mode: str,
     scenario_id: str,
     scenario_label: str,
     short_label: str,
@@ -862,11 +1007,16 @@ def _metrics_row(
     lab_config: LeveragedETFLabConfig,
 ) -> dict[str, Any]:
     equity = curve["total_equity"].astype(float)
-    returns = equity.pct_change().dropna()
+    returns = curve["investment_return"].astype(float).dropna()
     summary = performance_summary(returns) if not returns.empty else pd.Series(dtype=float)
-    drawdown = equity / equity.cummax() - 1.0
+    drawdown = curve["drawdown"].astype(float)
     max_drawdown = float(drawdown.min()) if not drawdown.empty else np.nan
-    recovery_days, recovered = _max_recovery_days(equity, curve["date"])
+    recovery_days, recovered = _max_recovery_days(curve["return_index"], curve["date"])
+    total_contributed = float(curve["total_contributed"].iloc[-1])
+    ending_equity = float(equity.iloc[-1])
+    simple_cash_return = ending_equity / total_contributed - 1.0 if total_contributed else np.nan
+    money_weighted_return = _xirr_from_curve(curve)
+    worst_segment_return, worst_segment_drawdown = _worst_segment_metrics(curve)
     risk_flag = _risk_flag(
         data_mode=data_mode,
         max_drawdown=max_drawdown,
@@ -875,6 +1025,7 @@ def _metrics_row(
     )
     return {
         "data_mode": data_mode,
+        "cash_flow_mode": cash_flow_mode,
         "scenario_id": scenario_id,
         "scenario_label": scenario_label,
         "short_label": short_label,
@@ -882,8 +1033,11 @@ def _metrics_row(
         "weights_summary": weights_summary,
         "start_date": pd.Timestamp(curve["date"].iloc[0]).date().isoformat(),
         "end_date": pd.Timestamp(curve["date"].iloc[-1]).date().isoformat(),
-        "ending_equity": float(equity.iloc[-1]),
-        "total_return": float(equity.iloc[-1] / equity.iloc[0] - 1.0),
+        "ending_equity": ending_equity,
+        "total_contributed": total_contributed,
+        "total_return": _summary_value(summary, "total_return"),
+        "simple_cash_return": simple_cash_return,
+        "xirr": money_weighted_return,
         "cagr": _summary_value(summary, "cagr"),
         "volatility": _summary_value(summary, "volatility"),
         "sharpe": _summary_value(summary, "sharpe"),
@@ -891,6 +1045,8 @@ def _metrics_row(
         "calmar": _summary_value(summary, "calmar"),
         "max_drawdown": max_drawdown,
         "max_recovery_days": recovery_days,
+        "worst_segment_return": worst_segment_return,
+        "worst_segment_drawdown": worst_segment_drawdown,
         "recovered": recovered,
         "risk_flag": risk_flag,
         "risk_failed": risk_flag in {"high_drawdown", "synthetic_stress_failed"},
@@ -924,6 +1080,80 @@ def _risk_adjusted_score(row: pd.Series) -> float:
     return float(score)
 
 
+def _robust_score(row: pd.Series) -> float:
+    score = _risk_adjusted_score(row)
+    if row.get("cash_flow_mode") == CASH_FLOW_DCA:
+        score += 2.0 * _safe_metric(row.get("xirr"))
+        score += 0.5 * _safe_metric(row.get("simple_cash_return"))
+    score += 0.5 * _safe_metric(row.get("worst_segment_return"))
+    score += _safe_metric(row.get("worst_segment_drawdown"))
+    recovery_days = _safe_metric(row.get("max_recovery_days"))
+    score -= min(recovery_days / 365.25, 20.0) * 0.05
+    if row.get("risk_flag") == "high_drawdown":
+        score -= 25.0
+    elif row.get("risk_flag") == "synthetic_stress_failed":
+        score -= 100.0
+    return float(score)
+
+
+def _xirr_from_curve(curve: pd.DataFrame) -> float:
+    cash_flows: list[tuple[pd.Timestamp, float]] = []
+    for row in curve.itertuples():
+        contribution = float(row.contribution)
+        if contribution > 0:
+            cash_flows.append((pd.Timestamp(row.date), -contribution))
+    if curve.empty:
+        return np.nan
+    cash_flows.append(
+        (
+            pd.Timestamp(curve["date"].iloc[-1]),
+            float(curve["total_equity"].iloc[-1]),
+        )
+    )
+    return xirr(cash_flows)
+
+
+def _worst_segment_metrics(curve: pd.DataFrame) -> tuple[float, float]:
+    if curve.empty:
+        return np.nan, np.nan
+    data = curve.copy()
+    data["date"] = pd.to_datetime(data["date"])
+    segments = _segment_masks(data)
+    returns: list[float] = []
+    drawdowns: list[float] = []
+    for mask in segments:
+        segment = data.loc[mask].copy()
+        if len(segment) < 2:
+            continue
+        index = segment["return_index"].astype(float)
+        returns.append(float(index.iloc[-1] / index.iloc[0] - 1.0))
+        drawdowns.append(float((index / index.cummax() - 1.0).min()))
+    return (
+        min(returns) if returns else np.nan,
+        min(drawdowns) if drawdowns else np.nan,
+    )
+
+
+def _segment_masks(data: pd.DataFrame) -> list[pd.Series]:
+    dates = pd.to_datetime(data["date"])
+    midpoint = len(data) // 2
+    masks = [
+        pd.Series([index < midpoint for index in range(len(data))], index=data.index),
+        pd.Series([index >= midpoint for index in range(len(data))], index=data.index),
+    ]
+    stress_windows = [
+        ("2000-03-10", "2002-10-09"),
+        ("2007-10-09", "2009-03-09"),
+        ("2020-02-19", "2020-03-23"),
+        ("2022-01-03", "2022-10-14"),
+    ]
+    for start, end in stress_windows:
+        mask = (dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))
+        if int(mask.sum()) >= 2:
+            masks.append(pd.Series(mask, index=data.index))
+    return masks
+
+
 def _max_recovery_days(equity: pd.Series, dates: pd.Series) -> tuple[int, bool]:
     values = equity.astype(float).reset_index(drop=True)
     date_values = pd.to_datetime(dates).reset_index(drop=True)
@@ -951,19 +1181,28 @@ def _payload_scenario_ids(metrics: pd.DataFrame, *, top_n: int) -> set[str]:
     baseline = set(metrics[metrics["strategy_family"] == "baseline"]["scenario_id"])
     top = set(
         metrics.sort_values(
-            ["data_mode", "risk_failed", "rank_score"],
-            ascending=[True, True, False],
+            ["data_mode", "cash_flow_mode", "risk_failed", "rank_score"],
+            ascending=[True, True, True, False],
         )
-        .groupby("data_mode")
+        .groupby(["data_mode", "cash_flow_mode"])
         .head(top_n)["scenario_id"]
     )
-    selected = baseline | top
+    robust_top = set(
+        metrics.sort_values(
+            ["data_mode", "cash_flow_mode", "risk_failed", "robust_score"],
+            ascending=[True, True, True, False],
+        )
+        .groupby(["data_mode", "cash_flow_mode"])
+        .head(max(4, top_n // 2))["scenario_id"]
+    )
+    selected = baseline | top | robust_top
     default_candidates = (
         metrics[
             (metrics["data_mode"] == "actual_etf")
+            & (metrics["cash_flow_mode"] == CASH_FLOW_DCA)
             & (metrics["strategy_family"].isin(["baseline", "trend_guard", "drawdown_guard"]))
         ]
-        .sort_values(["strategy_family", "rank_score"], ascending=[True, False])
+        .sort_values(["strategy_family", "robust_score"], ascending=[True, False])
         .head(4)["scenario_id"]
     )
     metrics.loc[metrics["scenario_id"].isin(default_candidates), "default_selected"] = True
@@ -1050,35 +1289,46 @@ def _glossary_cards() -> str:
 def _metrics_tables_by_mode(metrics: pd.DataFrame) -> str:
     return "\n".join(
         [
-            _metrics_table(
+            _lump_sum_table(
                 metrics,
-                data_mode="actual_etf",
-                title="Actual ETF 真實產品歷史",
-                copy="這張表只看真實 QQQ / QLD / TQQQ 價格，不含 2000/2008 壓力測試。",
+                title="Lump Sum 一次投入",
+                copy="10,000 USD 一次投入；這裡可以看 CAGR，但仍要搭配最大回撤與壓測。",
             ),
-            _metrics_table(
+            _dca_table(
                 metrics,
-                data_mode="synthetic_stress",
-                title="Synthetic stress 合成壓力測試",
-                copy="這張表用 QQQ 日報酬合成 2x/3x，專門檢查長歷史崩盤風險。",
+                title="DCA Decision Board",
+                copy=(
+                    "頭期 10,000 USD，每月 1,000 USD；"
+                    "重點看累計投入、期末資產、simple return 與 XIRR。"
+                ),
+            ),
+            _robust_table(
+                metrics,
+                title="Robust Ranking 穩健排名",
+                copy=(
+                    "這裡把分段最差表現、修復期與 stress risk flag 納入懲罰，"
+                    "不是只看全期間漂亮數字。"
+                ),
             ),
         ]
     )
 
 
-def _metrics_table(
+def _lump_sum_table(
     metrics: pd.DataFrame,
     *,
-    data_mode: str,
     title: str,
     copy: str,
 ) -> str:
-    if metrics.empty:
-        return '<p class="empty-state">沒有可顯示的策略結果。</p>'
-    display = metrics[metrics["data_mode"] == data_mode].sort_values("rank").head(12).copy()
-    if display.empty:
-        return ""
+    display = (
+        metrics[metrics["cash_flow_mode"] == CASH_FLOW_LUMP_SUM]
+        .sort_values(["data_mode", "rank"])
+        .groupby("data_mode")
+        .head(8)
+        .copy()
+    )
     columns = [
+        ("data_mode", "資料模式"),
         ("rank", "排名"),
         ("scenario_label", "情境"),
         ("total_return", "總報酬"),
@@ -1089,15 +1339,91 @@ def _metrics_table(
         ("max_recovery_days", "最長修復天數"),
         ("risk_flag", "風險標記"),
     ]
+    return _render_metric_table(display, title=title, copy=copy, columns=columns)
+
+
+def _dca_table(
+    metrics: pd.DataFrame,
+    *,
+    title: str,
+    copy: str,
+) -> str:
+    display = (
+        metrics[metrics["cash_flow_mode"] == CASH_FLOW_DCA]
+        .sort_values(["data_mode", "robust_rank"])
+        .groupby("data_mode")
+        .head(8)
+        .copy()
+    )
+    columns = [
+        ("data_mode", "資料模式"),
+        ("robust_rank", "穩健排名"),
+        ("scenario_label", "情境"),
+        ("total_contributed", "累計投入"),
+        ("ending_equity", "期末資產"),
+        ("simple_cash_return", "Simple Return"),
+        ("xirr", "XIRR"),
+        ("max_drawdown", "最大回撤"),
+        ("max_recovery_days", "最長修復天數"),
+        ("risk_flag", "風險標記"),
+    ]
+    return _render_metric_table(display, title=title, copy=copy, columns=columns)
+
+
+def _robust_table(
+    metrics: pd.DataFrame,
+    *,
+    title: str,
+    copy: str,
+) -> str:
+    display = (
+        metrics.sort_values(["cash_flow_mode", "data_mode", "robust_rank"])
+        .groupby(["cash_flow_mode", "data_mode"])
+        .head(6)
+        .copy()
+    )
+    columns = [
+        ("cash_flow_mode", "投入模式"),
+        ("data_mode", "資料模式"),
+        ("robust_rank", "穩健排名"),
+        ("scenario_label", "情境"),
+        ("robust_score", "Robust Score"),
+        ("worst_segment_return", "最差分段報酬"),
+        ("worst_segment_drawdown", "最差分段回撤"),
+        ("max_recovery_days", "最長修復天數"),
+        ("risk_flag", "風險標記"),
+    ]
+    return _render_metric_table(display, title=title, copy=copy, columns=columns)
+
+
+def _render_metric_table(
+    display: pd.DataFrame,
+    *,
+    title: str,
+    copy: str,
+    columns: list[tuple[str, str]],
+) -> str:
+    if display.empty:
+        return ""
     rows = []
     for _, row in display.iterrows():
         cells = []
         for column, _label in columns:
             value = row[column]
-            if column in {"total_return", "cagr", "max_drawdown"}:
+            if column in {
+                "total_return",
+                "cagr",
+                "max_drawdown",
+                "simple_cash_return",
+                "xirr",
+                "worst_segment_return",
+                "worst_segment_drawdown",
+            }:
                 text = _format_percent(value)
-            elif column in {"calmar", "sortino"}:
+            elif column in {"calmar", "sortino", "robust_score"}:
                 text = _format_number(value)
+            elif column in {"total_contributed", "ending_equity"}:
+                text = _format_money(value)
             else:
                 text = str(value)
             cells.append(f"<td>{escape(text)}</td>")
@@ -1122,13 +1448,14 @@ def _compare_checkboxes(scenarios: list[dict[str, Any]]) -> str:
     for scenario in scenarios:
         checked = " checked" if scenario.get("default") else ""
         risk = f" · {scenario['risk_flag']}" if scenario.get("risk_flag") != "ok" else ""
+        cash_flow_mode = str(scenario.get("cash_flow_mode", CASH_FLOW_LUMP_SUM))
         labels.append(
-            f"""<label class="compare-option">
+            f"""<label class="compare-option" data-option-cash-flow-mode="{escape(cash_flow_mode)}">
   <input type="checkbox" data-compare-checkbox value="{escape(str(scenario["key"]))}"{checked}>
   <span>
     <strong>{escape(str(scenario["short"]))}</strong>
     <small>
-      {escape(str(scenario["data_mode"]))}{escape(risk)}
+      {escape(cash_flow_mode)} · {escape(str(scenario["data_mode"]))}{escape(risk)}
       · {escape(str(scenario["full"]))}
     </small>
   </span>
@@ -1154,6 +1481,7 @@ const payloadElement = document.getElementById("leveraged-etf-payload");
 const chart = document.querySelector("[data-compare-chart]");
 const checkboxes = Array.from(document.querySelectorAll("[data-compare-checkbox]"));
 const metricButtons = Array.from(document.querySelectorAll("[data-compare-metric]"));
+const cashModeButtons = Array.from(document.querySelectorAll("[data-cash-flow-mode]"));
 const selectedText = document.querySelector("[data-compare-selection]");
 const warning = document.querySelector("[data-compare-warning]");
 const payload = payloadElement
@@ -1221,6 +1549,15 @@ metricButtons.forEach((button) => {
     activeMetric = button.dataset.compareMetric;
     metricButtons.forEach((item) => item.classList.toggle("is-active", item === button));
     redrawCompareChart();
+  });
+});
+cashModeButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const mode = button.dataset.cashFlowMode;
+    cashModeButtons.forEach((item) => item.classList.toggle("is-active", item === button));
+    document.querySelectorAll("[data-option-cash-flow-mode]").forEach((option) => {
+      option.hidden = mode !== "all" && option.dataset.optionCashFlowMode !== mode;
+    });
   });
 });
 redrawCompareChart();
@@ -1512,6 +1849,29 @@ td:nth-child(3) {
   gap: 8px;
 }
 
+.cash-mode-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.cash-mode-filter button {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--muted);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.cash-mode-filter button.is-active {
+  border-color: var(--indigo);
+  background: rgba(63, 95, 115, 0.1);
+  color: var(--indigo);
+  font-weight: 700;
+}
+
 .compare-option {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -1706,8 +2066,17 @@ def _format_number(value: Any) -> str:
     return f"{float(value):.2f}"
 
 
+def _format_money(value: Any) -> str:
+    if pd.isna(value):
+        return ""
+    return f"{float(value):,.2f}"
+
+
 __all__ = [
     "CASH",
+    "CASH_FLOW_BOTH",
+    "CASH_FLOW_DCA",
+    "CASH_FLOW_LUMP_SUM",
     "LeveragedETFLabOutputs",
     "LeveragedETFLabReportResult",
     "ProductSpec",
@@ -1718,10 +2087,12 @@ __all__ = [
     "monthly_rebalance_dates",
     "rank_metrics",
     "render_leveraged_etf_lab_html",
+    "resolve_cash_flow_modes",
     "resolve_scan_mode",
     "simulate_weighted_strategy",
     "static_weight_grid",
     "synthetic_daily_reset_prices",
     "trend_guard_weights",
     "write_leveraged_etf_lab_report",
+    "xirr",
 ]

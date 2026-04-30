@@ -25,6 +25,10 @@ def test_load_mvp_config():
     assert config.dynamic_leverage.risk_off_leverage == 1.00
     assert config.leveraged_etf_lab.family == "qqq"
     assert config.leveraged_etf_lab.initial_cash == 10_000
+    assert config.leveraged_etf_lab.dca_initial_cash == 10_000
+    assert config.leveraged_etf_lab.dca_contribution == 1_000
+    assert config.leveraged_etf_lab.cash_flow_mode == "both"
+    assert config.leveraged_etf_lab.robust_ranking_enabled is True
     assert config.leveraged_etf_lab.fast_grid_step == 0.25
     assert config.leveraged_etf_lab.full_grid_step == 0.10
     assert config.leveraged_etf_lab.fast_top_n == 12
