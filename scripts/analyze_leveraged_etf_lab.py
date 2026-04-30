@@ -10,6 +10,8 @@ from investment_backtest_lab.data import MarketDataLoader
 from investment_backtest_lab.leveraged_etf_lab import (
     ProductSpec,
     build_leveraged_etf_lab_outputs,
+    lab_config_for_scan_mode,
+    resolve_scan_mode,
     synthetic_daily_reset_prices,
     write_leveraged_etf_lab_report,
 )
@@ -23,10 +25,20 @@ def main() -> None:
     parser.add_argument("--config", default="configs/mvp_example.yaml")
     parser.add_argument("--family", default="qqq")
     parser.add_argument("--output-dir", default="reports")
+    parser.add_argument(
+        "--scan-mode",
+        choices=["fast", "full"],
+        default=None,
+        help="fast is the default; full uses the complete configured grid.",
+    )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--fast", action="store_true", help="Shortcut for --scan-mode fast.")
+    mode_group.add_argument("--full", action="store_true", help="Shortcut for --scan-mode full.")
     args = parser.parse_args()
 
     config = load_backtest_config(args.config)
-    lab = config.leveraged_etf_lab
+    scan_mode = normalize_scan_mode(args)
+    lab = lab_config_for_scan_mode(config.leveraged_etf_lab, scan_mode)
     family = args.family.lower()
     if family != lab.family:
         raise ValueError(
@@ -54,6 +66,7 @@ def main() -> None:
         synthetic_prices=synthetic_prices,
         products=products,
         lab_config=lab,
+        scan_mode=scan_mode,
     )
     result = write_leveraged_etf_lab_report(
         outputs=outputs,
@@ -62,6 +75,7 @@ def main() -> None:
         config_path=Path(args.config),
     )
     print_terminal_summary(result.metrics)
+    print(f"Scan mode:        {scan_mode}")
     print(f"HTML report:      {result.html_path}")
     print(f"Metrics CSV:      {result.metrics_path}")
     print(f"Curves CSV:       {result.curves_path}")
@@ -144,6 +158,14 @@ def print_terminal_summary(metrics: pd.DataFrame) -> None:
     for column in ["calmar", "sortino"]:
         display[column] = display[column].map(format_number_or_blank)
     print(display.to_string(index=False))
+
+
+def normalize_scan_mode(args: argparse.Namespace) -> str:
+    return resolve_scan_mode(
+        getattr(args, "scan_mode", None),
+        fast=bool(getattr(args, "fast", False)),
+        full=bool(getattr(args, "full", False)),
+    )
 
 
 def format_percent_or_blank(value: object) -> str:

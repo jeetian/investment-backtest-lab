@@ -98,7 +98,10 @@ leveraged_etf_lab:
   actual_start_date: "2011-01-01"
   synthetic_start_date: "1999-03-10"
   grid_step: 0.10
+  fast_grid_step: 0.25
+  full_grid_step: 0.10
   top_n: 24
+  fast_top_n: 12
   high_risk_drawdown: -0.65
   synthetic_failure_drawdown: -0.85
   trend_windows: [100, 200]

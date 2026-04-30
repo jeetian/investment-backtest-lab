@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ class LeveragedETFLabOutputs:
     curves: pd.DataFrame
     allocations: pd.DataFrame
     payload: dict[str, Any]
+    scan_mode: str
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,42 @@ class LeveragedETFLabReportResult:
     payload_path: Path
     curves_path: Path
     allocations_path: Path
+    scan_mode: str
+
+
+def lab_config_for_scan_mode(
+    lab_config: LeveragedETFLabConfig,
+    scan_mode: str,
+) -> LeveragedETFLabConfig:
+    normalized = scan_mode.lower()
+    if normalized == "fast":
+        return replace(
+            lab_config,
+            grid_step=lab_config.fast_grid_step,
+            top_n=lab_config.fast_top_n,
+        )
+    if normalized == "full":
+        return replace(
+            lab_config,
+            grid_step=lab_config.full_grid_step,
+            top_n=lab_config.top_n,
+        )
+    raise ValueError(f"scan_mode must be 'fast' or 'full', got {scan_mode!r}.")
+
+
+def resolve_scan_mode(
+    scan_mode: str | None = None,
+    *,
+    fast: bool = False,
+    full: bool = False,
+) -> str:
+    if fast and full:
+        raise ValueError("--fast and --full cannot be used together.")
+    if full:
+        return "full"
+    if fast:
+        return "fast"
+    return scan_mode or "fast"
 
 
 def build_leveraged_etf_lab_outputs(
@@ -53,6 +90,7 @@ def build_leveraged_etf_lab_outputs(
     synthetic_prices: pd.DataFrame,
     products: list[ProductSpec],
     lab_config: LeveragedETFLabConfig,
+    scan_mode: str = "full",
 ) -> LeveragedETFLabOutputs:
     product_map = {product.ticker: product for product in products}
     outputs: list[tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]] = []
@@ -86,12 +124,14 @@ def build_leveraged_etf_lab_outputs(
         curves=curves,
         products=product_map,
         top_n=lab_config.top_n,
+        scan_mode=scan_mode,
     )
     return LeveragedETFLabOutputs(
         metrics=metrics,
         curves=curves,
         allocations=allocations,
         payload=payload,
+        scan_mode=scan_mode,
     )
 
 
@@ -292,6 +332,7 @@ def build_compare_payload(
     curves: pd.DataFrame,
     products: dict[str, ProductSpec],
     top_n: int,
+    scan_mode: str,
 ) -> dict[str, Any]:
     selected_ids = _payload_scenario_ids(metrics, top_n=top_n)
     scenarios: list[dict[str, Any]] = []
@@ -323,6 +364,7 @@ def build_compare_payload(
             }
         )
     return {
+        "scan_mode": scan_mode,
         "products": {
             ticker: {"label": product.label, "leverage": product.leverage}
             for ticker, product in products.items()
@@ -374,6 +416,7 @@ def write_leveraged_etf_lab_report(
             metrics=outputs.metrics,
             payload=outputs.payload,
             family=family,
+            scan_mode=outputs.scan_mode,
             config_path=config_path,
             metrics_path=metrics_path,
             curves_path=curves_path,
@@ -392,6 +435,7 @@ def write_leveraged_etf_lab_report(
         payload_path=payload_path,
         curves_path=curves_path,
         allocations_path=allocations_path,
+        scan_mode=outputs.scan_mode,
     )
 
 
@@ -400,6 +444,7 @@ def render_leveraged_etf_lab_html(
     metrics: pd.DataFrame,
     payload: dict[str, Any],
     family: str,
+    scan_mode: str,
     config_path: Path,
     metrics_path: Path,
     curves_path: Path,
@@ -439,9 +484,34 @@ def render_leveraged_etf_lab_html(
       <div class="header-meta">
         <span>主口徑</span>
         <strong>USD</strong>
+        <span>掃描模式</span>
+        <strong>{escape(scan_mode.upper())}</strong>
         <small>generated {escape(generated_at)}</small>
       </div>
     </header>
+
+    <section class="section-block">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">How To Read</p>
+          <h2>這頁在回答什麼</h2>
+        </div>
+        <p>
+          固定一個標的家族時，這份報表用 QQQ / QLD / TQQQ 比較
+          1x、2x、3x 產品與防守規則，幫你找出「報酬更高但沒有在壓測中爆掉」
+          的候選策略。
+        </p>
+      </div>
+      <div class="notice-card warning-notice">
+        <strong>槓桿 ETF Product 不是融資槓桿</strong>
+        <p>
+          這裡沒有 debt、margin call 或借款利息。QLD/TQQQ 是產品本身每日重設的
+          2x/3x 暴露，風險重點是巨大回撤、波動耗損與長時間無法回到前高。
+        </p>
+      </div>
+      {_reading_steps()}
+      {_glossary_cards()}
+    </section>
 
     <section class="section-block">
       <div class="section-heading">
@@ -457,7 +527,7 @@ def render_leveraged_etf_lab_html(
         只做 2000/2008 類壓力測試，不代表實際可交易 ETF 歷史。</p>
       </div>
       {_summary_cards(metrics)}
-      {_metrics_table(metrics)}
+      {_metrics_tables_by_mode(metrics)}
     </section>
 
     <section class="section-block compare-lab">
@@ -467,6 +537,13 @@ def render_leveraged_etf_lab_html(
           <h2>自選情境疊圖</h2>
         </div>
         <p>預設只放 baseline 與各資料模式排名前段候選；完整結果請看 metrics CSV。</p>
+      </div>
+      <div class="notice-card">
+        <strong>目前掃描模式：{escape(scan_mode)}</strong>
+        <p>
+          Fast 模式用較粗權重格點快速探索；Full 模式使用完整 10% grid。
+          Compare Lab 可以自由勾選策略疊圖，建議一次不要超過 6 條線。
+        </p>
       </div>
       <div class="compare-layout">
         <aside class="compare-control">
@@ -915,17 +992,93 @@ def _summary_cards(metrics: pd.DataFrame) -> str:
     ) + "</div>"
 
 
-def _metrics_table(metrics: pd.DataFrame) -> str:
+def _reading_steps() -> str:
+    steps = [
+        (
+            "1",
+            "先看 Actual ETF",
+            "確認真實可買產品歷史中，候選策略是否真的比 QQQ 更有吸引力。",
+        ),
+        (
+            "2",
+            "再看 Synthetic stress",
+            "用合成 2x/3x 長歷史檢查 2000/2008 類崩盤時會不會承受不了。",
+        ),
+        (
+            "3",
+            "最後用 Compare Lab 疊圖",
+            "自己勾選 B&H、Trend Guard、Drawdown Guard，比較淨資產、回撤與產品曝險倍數。",
+        ),
+    ]
+    return """<div class="reading-block">
+  <h3>三步閱讀法</h3>
+  <div class="guide-grid">""" + "".join(
+        f"""<article class="guide-card">
+  <span>{escape(number)}</span>
+  <strong>{escape(title)}</strong>
+  <p>{escape(copy)}</p>
+</article>"""
+        for number, title, copy in steps
+    ) + "</div></div>"
+
+
+def _glossary_cards() -> str:
+    terms = [
+        ("Actual ETF", "真實 QQQ / QLD / TQQQ 價格，最接近可交易產品歷史。"),
+        ("Synthetic stress", "用 QQQ 日報酬合成 2x/3x，只做長歷史壓力測試。"),
+        ("B&H", "Buy and hold，全程持有單一產品。"),
+        ("Static Mix", "固定比例配置 QQQ / QLD / TQQQ / CASH，定期再平衡。"),
+        ("Trend Guard", "用 QQQ 均線判斷風險開關，跌破時降槓桿或轉防守資產。"),
+        ("Drawdown Guard", "用 QQQ 回撤分層降風險，例如 TQQQ -> QLD -> CASH。"),
+        ("Calmar", "CAGR 除以最大回撤絕對值，越高代表每承受一份回撤換到更多報酬。"),
+        ("Sortino", "只懲罰下行波動的風險調整指標，越高越好。"),
+        ("Max Drawdown", "歷史最大跌幅，槓桿 ETF 報表裡最重要的風險欄位之一。"),
+        ("Recovery Days", "從跌破前高到重新回到前高的最長等待天數。"),
+        ("risk_flag", "ok、high_drawdown 或 synthetic_stress_failed，用來提醒高風險候選。"),
+    ]
+    return """<div class="glossary-block">
+  <h3>名詞卡</h3>
+  <div class="term-grid">""" + "".join(
+        f"""<article class="term-card">
+  <strong>{escape(term)}</strong>
+  <p>{escape(copy)}</p>
+</article>"""
+        for term, copy in terms
+    ) + "</div></div>"
+
+
+def _metrics_tables_by_mode(metrics: pd.DataFrame) -> str:
+    return "\n".join(
+        [
+            _metrics_table(
+                metrics,
+                data_mode="actual_etf",
+                title="Actual ETF 真實產品歷史",
+                copy="這張表只看真實 QQQ / QLD / TQQQ 價格，不含 2000/2008 壓力測試。",
+            ),
+            _metrics_table(
+                metrics,
+                data_mode="synthetic_stress",
+                title="Synthetic stress 合成壓力測試",
+                copy="這張表用 QQQ 日報酬合成 2x/3x，專門檢查長歷史崩盤風險。",
+            ),
+        ]
+    )
+
+
+def _metrics_table(
+    metrics: pd.DataFrame,
+    *,
+    data_mode: str,
+    title: str,
+    copy: str,
+) -> str:
     if metrics.empty:
         return '<p class="empty-state">沒有可顯示的策略結果。</p>'
-    display = (
-        metrics.sort_values(["data_mode", "rank"])
-        .groupby("data_mode")
-        .head(12)
-        .copy()
-    )
+    display = metrics[metrics["data_mode"] == data_mode].sort_values("rank").head(12).copy()
+    if display.empty:
+        return ""
     columns = [
-        ("data_mode", "資料模式"),
         ("rank", "排名"),
         ("scenario_label", "情境"),
         ("total_return", "總報酬"),
@@ -950,12 +1103,18 @@ def _metrics_table(metrics: pd.DataFrame) -> str:
             cells.append(f"<td>{escape(text)}</td>")
         rows.append(f"<tr>{''.join(cells)}</tr>")
     headers = "".join(f"<th>{escape(label)}</th>" for _, label in columns)
-    return f"""<div class="table-wrap">
+    return f"""<section class="mode-board">
+  <div class="mode-board-heading">
+    <h3>{escape(title)}</h3>
+    <p>{escape(copy)}</p>
+  </div>
+  <div class="table-wrap">
   <table>
     <thead><tr>{headers}</tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
-</div>"""
+</div>
+</section>"""
 
 
 def _compare_checkboxes(scenarios: list[dict[str, Any]]) -> str:
@@ -1214,6 +1373,87 @@ body {
   margin-bottom: 14px;
 }
 
+.guide-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.guide-card,
+.term-card,
+.mode-board {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.guide-card {
+  padding: 16px;
+}
+
+.guide-card span {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-bottom: 12px;
+  border-radius: 50%;
+  background: var(--indigo);
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.guide-card strong,
+.term-card strong {
+  display: block;
+}
+
+.guide-card p,
+.term-card p,
+.mode-board-heading p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.reading-block,
+.glossary-block {
+  margin-top: 8px;
+}
+
+.reading-block h3,
+.glossary-block h3,
+.compare-control h3,
+.mode-board h3 {
+  margin: 0 0 10px;
+}
+
+.term-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.term-card {
+  padding: 12px;
+}
+
+.term-card p {
+  font-size: 0.88rem;
+}
+
+.mode-board {
+  margin-top: 14px;
+  overflow: hidden;
+}
+
+.mode-board-heading {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #f8f8f3;
+}
+
 .kpi-card {
   padding: 16px;
   background: linear-gradient(180deg, #ffffff, #fafaf6);
@@ -1366,6 +1606,8 @@ td:nth-child(3) {
   }
 
   .kpi-grid,
+  .guide-grid,
+  .term-grid,
   .compare-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1383,6 +1625,8 @@ td:nth-child(3) {
   }
 
   .kpi-grid,
+  .guide-grid,
+  .term-grid,
   .compare-layout {
     grid-template-columns: 1fr;
   }
@@ -1470,9 +1714,11 @@ __all__ = [
     "build_compare_payload",
     "build_leveraged_etf_lab_outputs",
     "drawdown_guard_weights",
+    "lab_config_for_scan_mode",
     "monthly_rebalance_dates",
     "rank_metrics",
     "render_leveraged_etf_lab_html",
+    "resolve_scan_mode",
     "simulate_weighted_strategy",
     "static_weight_grid",
     "synthetic_daily_reset_prices",

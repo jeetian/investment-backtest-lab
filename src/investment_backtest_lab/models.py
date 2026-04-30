@@ -237,7 +237,10 @@ class LeveragedETFLabConfig:
     actual_start_date: str | None = "2011-01-01"
     synthetic_start_date: str | None = "1999-03-10"
     grid_step: float = 0.10
+    fast_grid_step: float = 0.25
+    full_grid_step: float = 0.10
     top_n: int = 24
+    fast_top_n: int = 12
     high_risk_drawdown: float = -0.65
     synthetic_failure_drawdown: float = -0.85
     trend_windows: tuple[int, ...] = (100, 200)
@@ -263,6 +266,7 @@ class LeveragedETFLabConfig:
         )
         if len(drawdown_guards) != 2:
             raise ValueError("leveraged_etf_lab.drawdown_guards must contain two values.")
+        full_grid_step = float(data.get("full_grid_step", data.get("grid_step", 0.10)))
         return cls(
             family=str(data.get("family", "qqq")).lower(),
             initial_cash=float(data.get("initial_cash", 10_000.0)),
@@ -276,8 +280,11 @@ class LeveragedETFLabConfig:
                 if data.get("synthetic_start_date") is None
                 else str(data.get("synthetic_start_date"))
             ),
-            grid_step=float(data.get("grid_step", 0.10)),
+            grid_step=full_grid_step,
+            fast_grid_step=float(data.get("fast_grid_step", 0.25)),
+            full_grid_step=full_grid_step,
             top_n=int(data.get("top_n", 24)),
+            fast_top_n=int(data.get("fast_top_n", 12)),
             high_risk_drawdown=float(data.get("high_risk_drawdown", -0.65)),
             synthetic_failure_drawdown=float(data.get("synthetic_failure_drawdown", -0.85)),
             trend_windows=tuple(int(value) for value in data.get("trend_windows", [100, 200])),

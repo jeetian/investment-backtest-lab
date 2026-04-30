@@ -8,8 +8,10 @@ from investment_backtest_lab.leveraged_etf_lab import (
     ProductSpec,
     build_leveraged_etf_lab_outputs,
     drawdown_guard_weights,
+    lab_config_for_scan_mode,
     monthly_rebalance_dates,
     rank_metrics,
+    resolve_scan_mode,
     simulate_weighted_strategy,
     static_weight_grid,
     synthetic_daily_reset_prices,
@@ -68,6 +70,60 @@ def test_static_weight_grid_sums_to_one():
 
     assert len(grid) == 10
     assert all(sum(weights.values()) == pytest.approx(1.0) for weights in grid)
+
+
+def test_scan_mode_config_uses_fast_by_default_and_full_for_complete_grid():
+    config = LeveragedETFLabConfig(
+        grid_step=0.10,
+        fast_grid_step=0.50,
+        full_grid_step=0.10,
+        top_n=24,
+        fast_top_n=4,
+    )
+
+    fast = lab_config_for_scan_mode(config, "fast")
+    full = lab_config_for_scan_mode(config, "full")
+
+    assert fast.grid_step == 0.50
+    assert fast.top_n == 4
+    assert full.grid_step == 0.10
+    assert full.top_n == 24
+    assert resolve_scan_mode() == "fast"
+    assert resolve_scan_mode(full=True) == "full"
+
+
+def test_fast_mode_generates_fewer_scenarios_than_full_mode():
+    prices = sample_prices()
+    products = sample_products()
+    base_config = LeveragedETFLabConfig(
+        grid_step=0.25,
+        fast_grid_step=0.5,
+        full_grid_step=0.25,
+        top_n=12,
+        fast_top_n=4,
+        trend_windows=(2,),
+        drawdown_guards=(-0.10, -0.20),
+    )
+
+    fast = build_leveraged_etf_lab_outputs(
+        actual_prices=prices,
+        synthetic_prices=prices,
+        products=products,
+        lab_config=lab_config_for_scan_mode(base_config, "fast"),
+        scan_mode="fast",
+    )
+    full = build_leveraged_etf_lab_outputs(
+        actual_prices=prices,
+        synthetic_prices=prices,
+        products=products,
+        lab_config=lab_config_for_scan_mode(base_config, "full"),
+        scan_mode="full",
+    )
+
+    assert len(fast.metrics) < len(full.metrics)
+    assert fast.scan_mode == "fast"
+    assert fast.payload["scan_mode"] == "fast"
+    assert full.scan_mode == "full"
 
 
 def test_simulate_static_mix_records_monthly_rebalance_allocations():
@@ -145,11 +201,7 @@ def test_ranking_penalizes_stress_failure_instead_of_only_cagr():
 
 def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     prices = sample_prices()
-    products = [
-        ProductSpec("QQQ", 1.0, "QQQ 1x"),
-        ProductSpec("QLD", 2.0, "QLD 2x"),
-        ProductSpec("TQQQ", 3.0, "TQQQ 3x"),
-    ]
+    products = sample_products()
     config = LeveragedETFLabConfig(
         grid_step=0.5,
         top_n=4,
@@ -162,6 +214,7 @@ def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
         synthetic_prices=prices,
         products=products,
         lab_config=config,
+        scan_mode="fast",
     )
     result = write_leveraged_etf_lab_report(
         outputs=outputs,
@@ -179,8 +232,16 @@ def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     assert "Leveraged ETF Product Lab" in html
     assert "Actual ETF" in html
     assert "Synthetic stress" in html
+    assert "三步閱讀法" in html
+    assert "Trend Guard" in html
+    assert "Drawdown Guard" in html
+    assert "Calmar" in html
+    assert "Max Drawdown" in html
+    assert "目前掃描模式：fast" in html
     assert "data-compare-checkbox" in html
     assert "只做 2000/2008 類壓力測試" in html
+    assert "瘛刻" not in html
+    assert outputs.payload["metrics"]["total_equity"]["label"] == "淨資產"
     assert {"actual_etf", "synthetic_stress"} == set(outputs.metrics["data_mode"])
     assert {"rank_score", "risk_flag", "max_recovery_days"}.issubset(outputs.metrics.columns)
 
@@ -231,3 +292,11 @@ def sample_prices() -> pd.DataFrame:
         },
         index=dates,
     )
+
+
+def sample_products() -> list[ProductSpec]:
+    return [
+        ProductSpec("QQQ", 1.0, "QQQ 1x"),
+        ProductSpec("QLD", 2.0, "QLD 2x"),
+        ProductSpec("TQQQ", 3.0, "TQQQ 3x"),
+    ]
