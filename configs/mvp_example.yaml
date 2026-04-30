@@ -16,6 +16,18 @@ universe:
     asset_type: etf
     currency: USD
     data_source: yfinance
+  - ticker: QLD
+    name: ProShares Ultra QQQ ETF
+    market: US
+    asset_type: etf
+    currency: USD
+    data_source: yfinance
+  - ticker: TQQQ
+    name: ProShares UltraPro QQQ ETF
+    market: US
+    asset_type: etf
+    currency: USD
+    data_source: yfinance
   - ticker: "0050"
     name: Yuanta Taiwan 50 ETF
     market: TW
@@ -79,6 +91,28 @@ dynamic_leverage:
   neutral_leverage: 1.10
   risk_off_leverage: 1.00
   safety_buffer_guard: 0.30
+
+leveraged_etf_lab:
+  family: qqq
+  initial_cash: 10000
+  actual_start_date: "2011-01-01"
+  synthetic_start_date: "1999-03-10"
+  grid_step: 0.10
+  top_n: 24
+  high_risk_drawdown: -0.65
+  synthetic_failure_drawdown: -0.85
+  trend_windows: [100, 200]
+  drawdown_guards: [-0.10, -0.20]
+  products:
+    QQQ:
+      leverage: 1.0
+      label: QQQ 1x
+    QLD:
+      leverage: 2.0
+      label: QLD 2x
+    TQQQ:
+      leverage: 3.0
+      label: TQQQ 3x
 
 cost_model:
   tw:

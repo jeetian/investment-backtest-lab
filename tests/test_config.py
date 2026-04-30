@@ -7,7 +7,7 @@ def test_load_mvp_config():
 
     assert config.base_currency == "TWD"
     assert config.universe[0].market == Market.US
-    assert config.universe[2].data_source == DataSource.FINMIND
+    assert config.universe[4].data_source == DataSource.FINMIND
     assert config.rebalance.target_weights["SPY"] == 0.60
     assert config.rebalance.target_weights["QQQ"] == 0.40
     assert config.dca.contribution == 1_000
@@ -23,3 +23,7 @@ def test_load_mvp_config():
     assert config.dynamic_leverage.enabled is True
     assert config.dynamic_leverage.trend_window == 200
     assert config.dynamic_leverage.risk_off_leverage == 1.00
+    assert config.leveraged_etf_lab.family == "qqq"
+    assert config.leveraged_etf_lab.initial_cash == 10_000
+    assert config.leveraged_etf_lab.products["TQQQ"].leverage == 3.0
+    assert config.leveraged_etf_lab.synthetic_failure_drawdown == -0.85

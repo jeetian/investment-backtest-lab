@@ -207,6 +207,86 @@ class DynamicLeverageConfig:
 
 
 @dataclass(frozen=True)
+class LeveragedETFProductConfig:
+    ticker: str
+    leverage: float
+    label: str
+
+    @classmethod
+    def from_dict(cls, ticker: str, data: dict[str, Any] | None) -> LeveragedETFProductConfig:
+        data = data or {}
+        return cls(
+            ticker=str(data.get("ticker", ticker)).upper(),
+            leverage=float(data.get("leverage", 1.0)),
+            label=str(data.get("label", ticker.upper())),
+        )
+
+
+def _default_leveraged_etf_products() -> dict[str, LeveragedETFProductConfig]:
+    return {
+        "QQQ": LeveragedETFProductConfig("QQQ", 1.0, "QQQ 1x"),
+        "QLD": LeveragedETFProductConfig("QLD", 2.0, "QLD 2x"),
+        "TQQQ": LeveragedETFProductConfig("TQQQ", 3.0, "TQQQ 3x"),
+    }
+
+
+@dataclass(frozen=True)
+class LeveragedETFLabConfig:
+    family: str = "qqq"
+    initial_cash: float = 10_000.0
+    actual_start_date: str | None = "2011-01-01"
+    synthetic_start_date: str | None = "1999-03-10"
+    grid_step: float = 0.10
+    top_n: int = 24
+    high_risk_drawdown: float = -0.65
+    synthetic_failure_drawdown: float = -0.85
+    trend_windows: tuple[int, ...] = (100, 200)
+    drawdown_guards: tuple[float, float] = (-0.10, -0.20)
+    products: dict[str, LeveragedETFProductConfig] = field(
+        default_factory=_default_leveraged_etf_products
+    )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> LeveragedETFLabConfig:
+        data = data or {}
+        product_items = data.get("products") or {}
+        products = (
+            {
+                str(ticker).upper(): LeveragedETFProductConfig.from_dict(str(ticker), product_data)
+                for ticker, product_data in product_items.items()
+            }
+            if product_items
+            else _default_leveraged_etf_products()
+        )
+        drawdown_guards = tuple(
+            float(value) for value in data.get("drawdown_guards", [-0.10, -0.20])
+        )
+        if len(drawdown_guards) != 2:
+            raise ValueError("leveraged_etf_lab.drawdown_guards must contain two values.")
+        return cls(
+            family=str(data.get("family", "qqq")).lower(),
+            initial_cash=float(data.get("initial_cash", 10_000.0)),
+            actual_start_date=(
+                None
+                if data.get("actual_start_date") is None
+                else str(data.get("actual_start_date"))
+            ),
+            synthetic_start_date=(
+                None
+                if data.get("synthetic_start_date") is None
+                else str(data.get("synthetic_start_date"))
+            ),
+            grid_step=float(data.get("grid_step", 0.10)),
+            top_n=int(data.get("top_n", 24)),
+            high_risk_drawdown=float(data.get("high_risk_drawdown", -0.65)),
+            synthetic_failure_drawdown=float(data.get("synthetic_failure_drawdown", -0.85)),
+            trend_windows=tuple(int(value) for value in data.get("trend_windows", [100, 200])),
+            drawdown_guards=(drawdown_guards[0], drawdown_guards[1]),
+            products=products,
+        )
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     universe: list[AssetSpec]
     start_date: date
@@ -222,6 +302,7 @@ class BacktestConfig:
     ledger: LedgerConfig = field(default_factory=LedgerConfig)
     leverage: LeverageConfig = field(default_factory=LeverageConfig)
     dynamic_leverage: DynamicLeverageConfig = field(default_factory=DynamicLeverageConfig)
+    leveraged_etf_lab: LeveragedETFLabConfig = field(default_factory=LeveragedETFLabConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BacktestConfig:
@@ -240,6 +321,7 @@ class BacktestConfig:
             ledger=LedgerConfig.from_dict(data.get("ledger")),
             leverage=LeverageConfig.from_dict(data.get("leverage")),
             dynamic_leverage=DynamicLeverageConfig.from_dict(data.get("dynamic_leverage")),
+            leveraged_etf_lab=LeveragedETFLabConfig.from_dict(data.get("leveraged_etf_lab")),
         )
 
 

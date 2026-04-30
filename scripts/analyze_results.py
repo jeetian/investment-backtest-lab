@@ -345,7 +345,9 @@ def convert_close_to_base_series(
         if usd_twd is None:
             raise ValueError("USD/TWD FX is required for USD to TWD conversion.")
         return (close * align_fx_rate(usd_twd, close.index)).rename(close.name)
-    raise NotImplementedError(f"Currency conversion {asset.currency}->{base_currency} is not wired.")
+    raise NotImplementedError(
+        f"Currency conversion {asset.currency}->{base_currency} is not wired."
+    )
 
 
 def metric_record_from_returns(

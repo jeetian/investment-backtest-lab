@@ -4,7 +4,6 @@ import importlib
 import os
 from pathlib import Path
 
-
 cache_dir = Path(".cache/matplotlib")
 cache_dir.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(cache_dir.resolve()))
