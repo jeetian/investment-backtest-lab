@@ -7,7 +7,10 @@ from investment_backtest_lab.leveraged_etf_lab import (
     CASH,
     CASH_FLOW_DCA,
     CASH_FLOW_LUMP_SUM,
+    DEFAULT_AUDIT_SCENARIO_ID,
     ProductSpec,
+    build_dca_optimizer,
+    build_extreme_scenario_audit,
     build_leveraged_etf_lab_outputs,
     drawdown_guard_weights,
     lab_config_for_scan_mode,
@@ -341,6 +344,83 @@ def test_ranking_keeps_lump_sum_and_dca_separate():
     assert top_by_mode[CASH_FLOW_DCA] == "dca_better"
 
 
+def test_extreme_audit_reconciles_cash_flow_drawdown_and_price_proxy():
+    outputs = build_leveraged_etf_lab_outputs(
+        actual_prices=pd.DataFrame(),
+        synthetic_prices=sample_prices(),
+        products=sample_products(),
+        lab_config=LeveragedETFLabConfig(
+            grid_step=0.5,
+            top_n=4,
+            trend_windows=(2,),
+            drawdown_guards=(-0.10, -0.20),
+        ),
+        scan_mode="fast",
+    )
+
+    audit = build_extreme_scenario_audit(
+        metrics=outputs.metrics,
+        curves=outputs.curves,
+        audit_scenario_id=DEFAULT_AUDIT_SCENARIO_ID,
+    )
+
+    assert not audit.empty
+    final = audit[audit["is_final_date"]].iloc[-1]
+    bottom = audit[audit["is_max_drawdown_date"]].iloc[-1]
+    metric = outputs.metrics[outputs.metrics["scenario_id"] == DEFAULT_AUDIT_SCENARIO_ID].iloc[0]
+    assert audit["contribution"].sum() == pytest.approx(metric["total_contributed"])
+    assert final["metric_total_contributed"] == pytest.approx(metric["total_contributed"])
+    assert final["metric_ending_equity"] == pytest.approx(metric["ending_equity"])
+    assert (
+        final["metric_ending_equity"] / final["metric_total_contributed"] - 1.0
+    ) == pytest.approx(metric["simple_cash_return"])
+    assert audit["price_proxy_100_start"].iloc[-1] == pytest.approx(
+        audit["return_index"].iloc[-1] * 100.0
+    )
+    assert bottom["drawdown"] == pytest.approx(audit["drawdown"].min())
+
+
+def test_dca_optimizer_uses_robust_score_and_penalizes_stress_failure():
+    metrics = pd.DataFrame(
+        [
+            metric_row(
+                "safe_dca",
+                "ok",
+                cash_flow_mode=CASH_FLOW_DCA,
+                cagr=0.08,
+                calmar=0.8,
+                sortino=0.9,
+                sharpe=0.8,
+            ),
+            metric_row(
+                "failed_dca",
+                "synthetic_stress_failed",
+                cash_flow_mode=CASH_FLOW_DCA,
+                cagr=0.80,
+                calmar=8.0,
+                sortino=4.0,
+                sharpe=2.0,
+            ),
+            metric_row(
+                "lump_sum",
+                "ok",
+                cash_flow_mode=CASH_FLOW_LUMP_SUM,
+                cagr=0.20,
+                calmar=2.0,
+                sortino=1.0,
+                sharpe=1.0,
+            ),
+        ]
+    )
+
+    optimizer = build_dca_optimizer(rank_metrics(metrics))
+
+    assert set(optimizer["scenario_id"]) == {"safe_dca", "failed_dca"}
+    assert optimizer.iloc[0]["scenario_id"] == "safe_dca"
+    assert bool(optimizer.iloc[0]["eligible_for_robust_candidate"]) is True
+    assert optimizer.iloc[-1]["risk_flag"] == "synthetic_stress_failed"
+
+
 def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     prices = sample_prices()
     products = sample_products()
@@ -370,6 +450,10 @@ def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     assert result.payload_path.exists()
     assert result.curves_path.exists()
     assert result.allocations_path.exists()
+    assert result.extreme_audit_path.exists()
+    assert result.dca_optimizer_path.exists()
+    assert not result.extreme_audit.empty
+    assert not result.dca_optimizer.empty
     html = result.html_path.read_text(encoding="utf-8")
     assert "Leveraged ETF Product Lab" in html
     assert "Actual ETF" in html
@@ -380,6 +464,11 @@ def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     assert "Calmar" in html
     assert "Max Drawdown" in html
     assert "DCA Decision Board" in html
+    assert "Extreme Scenario Audit" in html
+    assert "極端案例稽核" in html
+    assert "DCA Optimizer v1" in html
+    assert "DCA 最佳化探索" in html
+    assert "不可作為穩健策略候選" in html
     assert "Lump Sum 一次投入" in html
     assert "Robust Ranking 穩健排名" in html
     assert "DCA 不用 CAGR 當主要判斷" in html
@@ -387,6 +476,9 @@ def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     assert "策略候選" in html
     assert "目前掃描模式：fast" in html
     assert "data-compare-checkbox" in html
+    assert "extreme-audit-payload" in html
+    assert "extreme audit CSV" in html
+    assert "DCA optimizer CSV" in html
     assert "只做 2000/2008 類壓力測試" in html
     assert "瘛刻" not in html
     assert outputs.payload["metrics"]["total_equity"]["label"] == "淨資產"

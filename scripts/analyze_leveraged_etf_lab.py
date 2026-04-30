@@ -8,6 +8,7 @@ import pandas as pd
 from investment_backtest_lab.config import load_backtest_config
 from investment_backtest_lab.data import MarketDataLoader
 from investment_backtest_lab.leveraged_etf_lab import (
+    DEFAULT_AUDIT_SCENARIO_ID,
     ProductSpec,
     build_leveraged_etf_lab_outputs,
     lab_config_for_scan_mode,
@@ -30,6 +31,11 @@ def main() -> None:
         choices=["lump_sum", "dca", "both"],
         default=None,
         help="Run lump-sum, DCA, or both cash-flow modes. Defaults to config.",
+    )
+    parser.add_argument(
+        "--audit-scenario",
+        default=DEFAULT_AUDIT_SCENARIO_ID,
+        help="Scenario id to render in the Extreme Scenario Audit section.",
     )
     parser.add_argument(
         "--scan-mode",
@@ -80,6 +86,7 @@ def main() -> None:
         output_dir=Path(args.output_dir),
         family=family,
         config_path=Path(args.config),
+        audit_scenario_id=args.audit_scenario,
     )
     print_terminal_summary(result.metrics)
     print(f"Scan mode:        {scan_mode}")
@@ -88,6 +95,8 @@ def main() -> None:
     print(f"Metrics CSV:      {result.metrics_path}")
     print(f"Curves CSV:       {result.curves_path}")
     print(f"Allocations CSV:  {result.allocations_path}")
+    print(f"Extreme Audit:    {result.extreme_audit_path}")
+    print(f"DCA Optimizer:    {result.dca_optimizer_path}")
     print(f"Payload JSON:     {result.payload_path}")
 
 

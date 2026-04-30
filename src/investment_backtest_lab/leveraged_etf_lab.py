@@ -16,6 +16,7 @@ CASH = "CASH"
 CASH_FLOW_LUMP_SUM = "lump_sum"
 CASH_FLOW_DCA = "dca"
 CASH_FLOW_BOTH = "both"
+DEFAULT_AUDIT_SCENARIO_ID = "synthetic-stress--dca-buy-hold-tqqq"
 
 
 @dataclass(frozen=True)
@@ -43,12 +44,16 @@ class LeveragedETFLabReportResult:
     metrics: pd.DataFrame
     curves: pd.DataFrame
     allocations: pd.DataFrame
+    extreme_audit: pd.DataFrame
+    dca_optimizer: pd.DataFrame
     payload: dict[str, Any]
     html_path: Path
     metrics_path: Path
     payload_path: Path
     curves_path: Path
     allocations_path: Path
+    extreme_audit_path: Path
+    dca_optimizer_path: Path
     scan_mode: str
 
 
@@ -458,12 +463,130 @@ def build_compare_payload(
     }
 
 
+def build_extreme_scenario_audit(
+    *,
+    metrics: pd.DataFrame,
+    curves: pd.DataFrame,
+    audit_scenario_id: str = DEFAULT_AUDIT_SCENARIO_ID,
+) -> pd.DataFrame:
+    selected_metrics = metrics[metrics["scenario_id"] == audit_scenario_id]
+    selected_curve = curves[curves["scenario_id"] == audit_scenario_id].copy()
+    if selected_metrics.empty or selected_curve.empty:
+        return _empty_extreme_audit_frame()
+
+    metric = selected_metrics.iloc[0]
+    selected_curve = selected_curve.sort_values("date").reset_index(drop=True)
+    selected_curve["date"] = pd.to_datetime(selected_curve["date"])
+    max_drawdown_position = int(selected_curve["drawdown"].astype(float).idxmin())
+    final_position = len(selected_curve) - 1
+    selected_curve["is_contribution_date"] = selected_curve["contribution"].astype(float) > 0
+    selected_curve["is_max_drawdown_date"] = False
+    selected_curve.loc[max_drawdown_position, "is_max_drawdown_date"] = True
+    selected_curve["is_final_date"] = False
+    selected_curve.loc[final_position, "is_final_date"] = True
+    selected_curve["price_proxy_100_start"] = selected_curve["return_index"].astype(float) * 100.0
+    selected_curve["units_proxy"] = (
+        selected_curve["total_equity"].astype(float)
+        / selected_curve["price_proxy_100_start"].replace(0.0, np.nan)
+    )
+    selected_curve["equity_to_contribution_multiple"] = (
+        selected_curve["total_equity"].astype(float)
+        / selected_curve["total_contributed"].replace(0.0, np.nan)
+    )
+
+    repeated_columns = {
+        "audit_scenario_id": audit_scenario_id,
+        "risk_flag": metric["risk_flag"],
+        "metric_total_contributed": float(metric["total_contributed"]),
+        "metric_ending_equity": float(metric["ending_equity"]),
+        "metric_simple_cash_return": float(metric["simple_cash_return"]),
+        "metric_xirr": float(metric["xirr"]),
+        "metric_cagr": float(metric["cagr"]),
+        "metric_max_drawdown": float(metric["max_drawdown"]),
+        "metric_max_recovery_days": int(metric["max_recovery_days"]),
+        "metric_robust_rank": int(metric["robust_rank"]),
+    }
+    for column, value in repeated_columns.items():
+        selected_curve[column] = value
+
+    columns = [
+        "date",
+        "audit_scenario_id",
+        "scenario_label",
+        "data_mode",
+        "cash_flow_mode",
+        "risk_flag",
+        "is_contribution_date",
+        "is_max_drawdown_date",
+        "is_final_date",
+        "contribution",
+        "total_contributed",
+        "total_equity",
+        "equity_to_contribution_multiple",
+        "drawdown",
+        "return_index",
+        "price_proxy_100_start",
+        "units_proxy",
+        "effective_product_leverage",
+        "metric_total_contributed",
+        "metric_ending_equity",
+        "metric_simple_cash_return",
+        "metric_xirr",
+        "metric_cagr",
+        "metric_max_drawdown",
+        "metric_max_recovery_days",
+        "metric_robust_rank",
+    ]
+    return selected_curve[columns]
+
+
+def build_dca_optimizer(metrics: pd.DataFrame) -> pd.DataFrame:
+    dca = metrics[metrics["cash_flow_mode"] == CASH_FLOW_DCA].copy()
+    if dca.empty:
+        return _empty_dca_optimizer_frame()
+    dca["eligible_for_robust_candidate"] = ~dca["risk_failed"].astype(bool)
+    dca = dca.sort_values(
+        [
+            "data_mode",
+            "eligible_for_robust_candidate",
+            "robust_score",
+            "xirr",
+            "simple_cash_return",
+        ],
+        ascending=[True, False, False, False, False],
+    )
+    dca["optimizer_rank"] = dca.groupby("data_mode").cumcount() + 1
+    columns = [
+        "data_mode",
+        "optimizer_rank",
+        "eligible_for_robust_candidate",
+        "scenario_id",
+        "scenario_label",
+        "strategy_family",
+        "weights_summary",
+        "total_contributed",
+        "ending_equity",
+        "simple_cash_return",
+        "xirr",
+        "cagr",
+        "max_drawdown",
+        "max_recovery_days",
+        "worst_segment_return",
+        "worst_segment_drawdown",
+        "robust_score",
+        "risk_flag",
+        "risk_failed",
+    ]
+    return dca[columns].reset_index(drop=True)
+
+
 def write_leveraged_etf_lab_report(
     *,
     outputs: LeveragedETFLabOutputs,
     output_dir: Path,
     family: str,
     config_path: Path,
+    audit_scenario_id: str = DEFAULT_AUDIT_SCENARIO_ID,
 ) -> LeveragedETFLabReportResult:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -473,10 +596,20 @@ def write_leveraged_etf_lab_report(
     payload_path = output_dir / f"leveraged_etf_{slug}_compare_payload.json"
     curves_path = output_dir / f"leveraged_etf_{slug}_curves.csv"
     allocations_path = output_dir / f"leveraged_etf_{slug}_allocations.csv"
+    extreme_audit_path = output_dir / f"leveraged_etf_{slug}_extreme_audit.csv"
+    dca_optimizer_path = output_dir / f"leveraged_etf_{slug}_dca_optimizer.csv"
+    extreme_audit = build_extreme_scenario_audit(
+        metrics=outputs.metrics,
+        curves=outputs.curves,
+        audit_scenario_id=audit_scenario_id,
+    )
+    dca_optimizer = build_dca_optimizer(outputs.metrics)
 
     outputs.metrics.to_csv(metrics_path, index=False, encoding="utf-8")
     outputs.curves.to_csv(curves_path, index=False, encoding="utf-8")
     outputs.allocations.to_csv(allocations_path, index=False, encoding="utf-8")
+    extreme_audit.to_csv(extreme_audit_path, index=False, encoding="utf-8")
+    dca_optimizer.to_csv(dca_optimizer_path, index=False, encoding="utf-8")
     payload_path.write_text(
         json.dumps(outputs.payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -484,6 +617,8 @@ def write_leveraged_etf_lab_report(
     html_path.write_text(
         render_leveraged_etf_lab_html(
             metrics=outputs.metrics,
+            extreme_audit=extreme_audit,
+            dca_optimizer=dca_optimizer,
             payload=outputs.payload,
             family=family,
             scan_mode=outputs.scan_mode,
@@ -491,6 +626,8 @@ def write_leveraged_etf_lab_report(
             metrics_path=metrics_path,
             curves_path=curves_path,
             allocations_path=allocations_path,
+            extreme_audit_path=extreme_audit_path,
+            dca_optimizer_path=dca_optimizer_path,
             payload_path=payload_path,
         ),
         encoding="utf-8",
@@ -499,12 +636,16 @@ def write_leveraged_etf_lab_report(
         metrics=outputs.metrics,
         curves=outputs.curves,
         allocations=outputs.allocations,
+        extreme_audit=extreme_audit,
+        dca_optimizer=dca_optimizer,
         payload=outputs.payload,
         html_path=html_path,
         metrics_path=metrics_path,
         payload_path=payload_path,
         curves_path=curves_path,
         allocations_path=allocations_path,
+        extreme_audit_path=extreme_audit_path,
+        dca_optimizer_path=dca_optimizer_path,
         scan_mode=outputs.scan_mode,
     )
 
@@ -512,6 +653,8 @@ def write_leveraged_etf_lab_report(
 def render_leveraged_etf_lab_html(
     *,
     metrics: pd.DataFrame,
+    extreme_audit: pd.DataFrame,
+    dca_optimizer: pd.DataFrame,
     payload: dict[str, Any],
     family: str,
     scan_mode: str,
@@ -519,9 +662,12 @@ def render_leveraged_etf_lab_html(
     metrics_path: Path,
     curves_path: Path,
     allocations_path: Path,
+    extreme_audit_path: Path,
+    dca_optimizer_path: Path,
     payload_path: Path,
 ) -> str:
     payload_json = _json_for_script(payload)
+    audit_payload_json = _json_for_script(_audit_payload(extreme_audit))
     generated_at = pd.Timestamp.now(tz="Asia/Taipei").strftime("%Y-%m-%d %H:%M:%S %Z")
     font_url = (
         "https://fonts.googleapis.com/css2?"
@@ -604,6 +750,10 @@ def render_leveraged_etf_lab_html(
       {_metrics_tables_by_mode(metrics)}
     </section>
 
+    {_extreme_audit_section(extreme_audit, extreme_audit_path)}
+
+    {_dca_optimizer_section(dca_optimizer, dca_optimizer_path)}
+
     <section class="section-block compare-lab">
       <div class="section-heading">
         <div>
@@ -638,6 +788,7 @@ def render_leveraged_etf_lab_html(
         </div>
       </div>
       <script type="application/json" id="leveraged-etf-payload">{payload_json}</script>
+      <script type="application/json" id="extreme-audit-payload">{audit_payload_json}</script>
     </section>
 
     <section class="section-block">
@@ -652,12 +803,15 @@ def render_leveraged_etf_lab_html(
         <a class="audit-link" href="{escape(metrics_path.name)}">metrics CSV</a>
         <a class="audit-link" href="{escape(curves_path.name)}">curves CSV</a>
         <a class="audit-link" href="{escape(allocations_path.name)}">allocations CSV</a>
+        <a class="audit-link" href="{escape(extreme_audit_path.name)}">extreme audit CSV</a>
+        <a class="audit-link" href="{escape(dca_optimizer_path.name)}">DCA optimizer CSV</a>
         <a class="audit-link" href="{escape(payload_path.name)}">compare payload JSON</a>
         <span class="audit-note">config: {escape(str(config_path))}</span>
       </div>
     </section>
   </main>
   {_compare_script()}
+  {_extreme_audit_script()}
 </body>
 </html>
 """
@@ -1286,6 +1440,163 @@ def _glossary_cards() -> str:
     ) + "</div></div>"
 
 
+def _extreme_audit_section(audit: pd.DataFrame, audit_path: Path) -> str:
+    if audit.empty:
+        return """<section class="section-block">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Extreme Scenario Audit</p>
+      <h2>極端案例稽核</h2>
+    </div>
+    <p class="empty-state">找不到預設稽核情境，請確認 --audit-scenario 是否存在於 curves CSV。</p>
+  </div>
+</section>"""
+    summary = _audit_summary(audit)
+    cards = [
+        ("累計投入", _format_money(summary["total_contributed"]), "外部現金流總額"),
+        ("期末淨資產", _format_money(summary["ending_equity"]), "扣除現金流後的最終資產"),
+        ("投入倍數", f"{summary['ending_multiple']:.2f}x", "ending equity / contributed"),
+        ("XIRR", _format_percent(summary["xirr"]), "用每期投入計算的年化金錢加權報酬"),
+        ("最大回撤", _format_percent(summary["max_drawdown"]), summary["max_drawdown_date"]),
+        ("修復天數", str(int(summary["max_recovery_days"])), "越長代表心理與資金壓力越高"),
+        ("風險旗標", str(summary["risk_flag"]), "synthetic_stress_failed 不可視為穩健候選"),
+        ("Robust Rank", str(int(summary["robust_rank"])), "高資產不等於高穩健性"),
+    ]
+    card_html = "".join(_audit_card(label, value, note) for label, value, note in cards)
+    return f"""<section class="section-block extreme-audit" data-extreme-audit>
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Extreme Scenario Audit</p>
+      <h2>極端案例稽核：Synthetic DCA TQQQ</h2>
+    </div>
+    <p>
+      這段專門拆解 67M 這種看起來驚人的結果。它保留數學結果，但把近乎歸零的路徑、
+      長修復期與 synthetic stress 失敗旗標放在第一眼，避免把極端路徑誤認成最佳策略。
+    </p>
+  </div>
+  <div class="notice-card warning-notice">
+    <strong>不可作為穩健策略候選</strong>
+    <p>
+      Synthetic stress 不是實際 ETF 歷史；TQQQ 類產品還有費用、追蹤誤差、流動性、
+      產品存續與真實交易限制。若最大回撤接近 -100%，即使期末資產很高，也必須先視為壓測失敗。
+    </p>
+  </div>
+  <div class="kpi-grid">{card_html}</div>
+  <div class="audit-chart-grid">
+    <article class="chart-card">
+      <h3>累計投入 vs 淨資產</h3>
+      <div class="audit-chart" data-audit-chart="equity"></div>
+    </article>
+    <article class="chart-card">
+      <h3>TQQQ synthetic price proxy</h3>
+      <div class="audit-chart" data-audit-chart="price"></div>
+    </article>
+    <article class="chart-card">
+      <h3>回撤路徑</h3>
+      <div class="audit-chart" data-audit-chart="drawdown"></div>
+    </article>
+    <article class="chart-card">
+      <h3>每月投入後持有單位 proxy</h3>
+      <div class="audit-chart" data-audit-chart="units"></div>
+    </article>
+  </div>
+  <div class="audit-links">
+    <a class="audit-link" href="{escape(audit_path.name)}">下載 extreme audit CSV</a>
+  </div>
+</section>"""
+
+
+def _dca_optimizer_section(optimizer: pd.DataFrame, optimizer_path: Path) -> str:
+    if optimizer.empty:
+        return ""
+    actual = optimizer[optimizer["data_mode"] == "actual_etf"].head(8)
+    synthetic = optimizer[optimizer["data_mode"] == "synthetic_stress"].head(8)
+    columns = [
+        ("optimizer_rank", "排名"),
+        ("eligible_for_robust_candidate", "可作穩健候選"),
+        ("scenario_label", "情境"),
+        ("ending_equity", "期末資產"),
+        ("simple_cash_return", "Simple Return"),
+        ("xirr", "XIRR"),
+        ("max_drawdown", "最大回撤"),
+        ("max_recovery_days", "修復天數"),
+        ("robust_score", "Robust Score"),
+        ("risk_flag", "風險旗標"),
+    ]
+    actual_table = _render_metric_table(
+        actual,
+        title="Actual ETF DCA Ranking",
+        copy="真實 QQQ/QLD/TQQQ 歷史中的 DCA 候選。",
+        columns=columns,
+    )
+    synthetic_table = _render_metric_table(
+        synthetic,
+        title="Synthetic Stress DCA Robust Ranking",
+        copy="長歷史合成壓測中的 DCA 候選，synthetic_stress_failed 會被壓低。",
+        columns=columns,
+    )
+    return f"""<section class="section-block">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">DCA Optimizer v1</p>
+      <h2>DCA 最佳化探索</h2>
+    </div>
+    <p>
+      這裡只看 DCA，並且以 robust_score 排序；ending equity 和 CAGR 不能單獨決定最佳策略。
+      Actual ETF 與 Synthetic Stress 分開看，避免把真實產品歷史和壓測結論混在一起。
+    </p>
+  </div>
+  {actual_table}
+  {synthetic_table}
+  <div class="audit-links">
+    <a class="audit-link" href="{escape(optimizer_path.name)}">下載 DCA optimizer CSV</a>
+  </div>
+</section>"""
+
+
+def _audit_card(label: str, value: str, note: str) -> str:
+    return f"""<article class="kpi-card">
+  <span>{escape(label)}</span>
+  <strong>{escape(value)}</strong>
+  <small>{escape(note)}</small>
+</article>"""
+
+
+def _audit_summary(audit: pd.DataFrame) -> dict[str, Any]:
+    final = audit[audit["is_final_date"]].iloc[-1]
+    bottom = audit[audit["is_max_drawdown_date"]].iloc[-1]
+    return {
+        "total_contributed": float(final["metric_total_contributed"]),
+        "ending_equity": float(final["metric_ending_equity"]),
+        "ending_multiple": float(final["metric_ending_equity"])
+        / float(final["metric_total_contributed"]),
+        "xirr": float(final["metric_xirr"]),
+        "max_drawdown": float(final["metric_max_drawdown"]),
+        "max_drawdown_date": pd.Timestamp(bottom["date"]).date().isoformat(),
+        "max_recovery_days": int(final["metric_max_recovery_days"]),
+        "risk_flag": str(final["risk_flag"]),
+        "robust_rank": int(final["metric_robust_rank"]),
+    }
+
+
+def _audit_payload(audit: pd.DataFrame) -> dict[str, Any]:
+    if audit.empty:
+        return {"dates": [], "series": {}}
+    data = audit.sort_values("date")
+    return {
+        "dates": [pd.Timestamp(date).date().isoformat() for date in data["date"]],
+        "scenario_label": str(data["scenario_label"].iloc[0]),
+        "series": {
+            "total_equity": _json_series(data["total_equity"]),
+            "total_contributed": _json_series(data["total_contributed"]),
+            "price_proxy_100_start": _json_series(data["price_proxy_100_start"]),
+            "drawdown": _json_series(data["drawdown"]),
+            "units_proxy": _json_series(data["units_proxy"]),
+            "contribution": _json_series(data["contribution"]),
+        },
+    }
+
+
 def _metrics_tables_by_mode(metrics: pd.DataFrame) -> str:
     return "\n".join(
         [
@@ -1561,6 +1872,60 @@ cashModeButtons.forEach((button) => {
   });
 });
 redrawCompareChart();
+</script>"""
+
+
+def _extreme_audit_script() -> str:
+    return """<script>
+const auditElement = document.getElementById("extreme-audit-payload");
+const auditPayload = auditElement
+  ? JSON.parse(auditElement.textContent)
+  : { dates: [], series: {} };
+
+function auditTrace(metric, name, color, dash = "solid") {
+  return {
+    x: auditPayload.dates,
+    y: auditPayload.series[metric] || [],
+    mode: "lines",
+    type: "scatter",
+    name,
+    line: { color, width: 2, dash },
+  };
+}
+
+function renderAuditChart(kind, traces, yaxis, tickformat = null) {
+  const element = document.querySelector(`[data-audit-chart="${kind}"]`);
+  if (!window.Plotly || !element || !auditPayload.dates.length) return;
+  const layout = {
+    template: "plotly_white",
+    paper_bgcolor: "#ffffff",
+    plot_bgcolor: "#ffffff",
+    height: 330,
+    margin: { l: 62, r: 24, t: 18, b: 46 },
+    hovermode: "x unified",
+    showlegend: traces.length > 1,
+    legend: { orientation: "h", y: 1.16, x: 0, font: { size: 11 } },
+    font: { family: "Noto Sans TC, Noto Sans JP, Segoe UI, sans-serif", color: "#202521" },
+    xaxis: { showgrid: false, zeroline: false },
+    yaxis: { title: yaxis, gridcolor: "#e6e8e1", zeroline: false },
+  };
+  if (tickformat) layout.yaxis.tickformat = tickformat;
+  Plotly.react(element, traces, layout, { displaylogo: false, responsive: true });
+}
+
+renderAuditChart("equity", [
+  auditTrace("total_equity", "淨資產", "#3f5f73"),
+  auditTrace("total_contributed", "累計投入", "#b66f52", "dash"),
+], "USD");
+renderAuditChart("price", [
+  auditTrace("price_proxy_100_start", "price proxy", "#6f8375"),
+], "100 起點");
+renderAuditChart("drawdown", [
+  auditTrace("drawdown", "drawdown", "#b66f52"),
+], "Drawdown", ".0%");
+renderAuditChart("units", [
+  auditTrace("units_proxy", "units proxy", "#3f5f73"),
+], "Units proxy");
 </script>"""
 
 
@@ -1949,6 +2314,28 @@ td:nth-child(3) {
   margin-top: 8px;
 }
 
+.audit-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.chart-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+.chart-card h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.audit-chart {
+  min-height: 330px;
+}
+
 .empty-state {
   margin: 0;
   color: var(--muted);
@@ -1968,6 +2355,7 @@ td:nth-child(3) {
   .kpi-grid,
   .guide-grid,
   .term-grid,
+  .audit-chart-grid,
   .compare-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1987,6 +2375,7 @@ td:nth-child(3) {
   .kpi-grid,
   .guide-grid,
   .term-grid,
+  .audit-chart-grid,
   .compare-layout {
     grid-template-columns: 1fr;
   }
@@ -1999,6 +2388,65 @@ def _best_metric(metrics: pd.DataFrame, data_mode: str) -> pd.Series | None:
     if selected.empty:
         return None
     return selected.iloc[0]
+
+
+def _empty_extreme_audit_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "date",
+            "audit_scenario_id",
+            "scenario_label",
+            "data_mode",
+            "cash_flow_mode",
+            "risk_flag",
+            "is_contribution_date",
+            "is_max_drawdown_date",
+            "is_final_date",
+            "contribution",
+            "total_contributed",
+            "total_equity",
+            "equity_to_contribution_multiple",
+            "drawdown",
+            "return_index",
+            "price_proxy_100_start",
+            "units_proxy",
+            "effective_product_leverage",
+            "metric_total_contributed",
+            "metric_ending_equity",
+            "metric_simple_cash_return",
+            "metric_xirr",
+            "metric_cagr",
+            "metric_max_drawdown",
+            "metric_max_recovery_days",
+            "metric_robust_rank",
+        ]
+    )
+
+
+def _empty_dca_optimizer_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "data_mode",
+            "optimizer_rank",
+            "eligible_for_robust_candidate",
+            "scenario_id",
+            "scenario_label",
+            "strategy_family",
+            "weights_summary",
+            "total_contributed",
+            "ending_equity",
+            "simple_cash_return",
+            "xirr",
+            "cagr",
+            "max_drawdown",
+            "max_recovery_days",
+            "worst_segment_return",
+            "worst_segment_drawdown",
+            "robust_score",
+            "risk_flag",
+            "risk_failed",
+        ]
+    )
 
 
 def _card_title(row: pd.Series | None) -> str:
@@ -2077,10 +2525,13 @@ __all__ = [
     "CASH_FLOW_BOTH",
     "CASH_FLOW_DCA",
     "CASH_FLOW_LUMP_SUM",
+    "DEFAULT_AUDIT_SCENARIO_ID",
     "LeveragedETFLabOutputs",
     "LeveragedETFLabReportResult",
     "ProductSpec",
     "build_compare_payload",
+    "build_dca_optimizer",
+    "build_extreme_scenario_audit",
     "build_leveraged_etf_lab_outputs",
     "drawdown_guard_weights",
     "lab_config_for_scan_mode",
