@@ -1,33 +1,47 @@
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+MARKDOWN_FILES = [
+    ROOT / "README.md",
+    ROOT / "AGENTS.md",
+    *sorted((ROOT / "docs").glob("*.md")),
+]
 
-def test_project_scope_docs_are_utf8_readable():
-    docs = [
-        Path("README.md"),
-        Path("AGENTS.md"),
-        Path("docs/PROJECT_SCOPE_ZH.md"),
-        Path("docs/ROADMAP_ZH.md"),
-        Path("docs/VALIDATION_STRATEGY_ZH.md"),
-        Path("docs/FRAMEWORK_HYGIENE_ZH.md"),
-        Path("docs/QUICKSTART_ZH.md"),
-        Path("docs/SETUP_ZH.md"),
-        Path("docs/VALIDATION_ZH.md"),
-    ]
+MOJIBAKE_MARKERS = (
+    "\ufffd",
+    "銝",
+    "嚗",
+    "雿",
+    "蝑",
+    "撠",
+    "摰",
+    "鞈",
+    "瘛",
+    "蝛",
+)
 
-    for path in docs:
+
+def test_markdown_files_are_utf8_and_without_common_mojibake():
+    for path in MARKDOWN_FILES:
         text = path.read_text(encoding="utf-8")
-        assert text.strip()
+        assert text.strip(), f"{path.name} should not be empty"
+        for marker in MOJIBAKE_MARKERS:
+            assert marker not in text, f"{path.name} contains mojibake marker {marker!r}"
 
 
-def test_readme_and_agents_link_to_scope_documents():
-    readme = Path("README.md").read_text(encoding="utf-8")
-    agents = Path("AGENTS.md").read_text(encoding="utf-8")
+def test_project_direction_links_are_documented():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
-    for link in [
+    for link in (
         "docs/PROJECT_SCOPE_ZH.md",
         "docs/ROADMAP_ZH.md",
         "docs/VALIDATION_STRATEGY_ZH.md",
         "docs/FRAMEWORK_HYGIENE_ZH.md",
-    ]:
+        "docs/STRATEGY_RESEARCH_PLAN_ZH.md",
+        "docs/ALLOCATION_WORKFLOW_ZH.md",
+    ):
         assert link in readme
-        assert link in agents
+
+    assert "月度配置研究訊號" in agents
+    assert "Optuna" in agents

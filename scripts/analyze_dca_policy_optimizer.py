@@ -36,6 +36,20 @@ def main() -> None:
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument("--fast", action="store_true", help="Shortcut for --scan-mode fast.")
     mode_group.add_argument("--full", action="store_true", help="Shortcut for --scan-mode full.")
+    cohort_group = parser.add_mutually_exclusive_group()
+    cohort_group.add_argument(
+        "--cohort-validation",
+        dest="cohort_validation",
+        action="store_true",
+        default=None,
+        help="Enable rolling cohort validation.",
+    )
+    cohort_group.add_argument(
+        "--no-cohort-validation",
+        dest="cohort_validation",
+        action="store_false",
+        help="Skip rolling cohort validation for a faster run.",
+    )
     args = parser.parse_args()
 
     config = load_backtest_config(args.config)
@@ -76,6 +90,7 @@ def main() -> None:
         products=products,
         config=optimizer_config,
         scan_mode=scan_mode,
+        cohort_validation=args.cohort_validation,
     )
     result = write_dca_policy_optimizer_report(
         outputs=outputs,
@@ -83,13 +98,15 @@ def main() -> None:
         family=family,
         config_path=Path(args.config),
     )
-    print_terminal_summary(result.metrics, result.current_signal)
+    print_terminal_summary(result.metrics, result.allocation_signal)
     print(f"Scan mode:       {scan_mode}")
     print(f"HTML report:     {result.html_path}")
     print(f"Metrics CSV:     {result.metrics_path}")
     print(f"Policy CSV:      {result.policy_path}")
     print(f"Walk-forward:    {result.walk_forward_path}")
-    print(f"Current signal:  {result.current_signal_path}")
+    print(f"Cohorts CSV:     {result.cohorts_path}")
+    print(f"Cohort summary:  {result.cohort_summary_path}")
+    print(f"Allocation:      {result.allocation_signal_path}")
     print(f"Payload JSON:    {result.payload_path}")
 
 
@@ -175,11 +192,13 @@ def print_terminal_summary(metrics: pd.DataFrame, current_signal: pd.DataFrame) 
     if not current_signal.empty:
         signal = current_signal.iloc[0]
         print()
-        print("Top current research signal")
+        print("Top monthly allocation research signal")
         print(f"as_of:     {signal['as_of_date']}")
         print(f"strategy:  {signal['scenario_label']}")
         print(f"regime:    {signal['regime']}")
         print(f"target:    {float(signal['target_effective_leverage']):.2f}x")
+        print(f"rebalance: {signal.get('next_rebalance_date', '')}")
+        print(f"monitor:   {signal.get('next_monitor_date', '')}")
         print(
             "weights:   "
             f"QQQ {float(signal.get('QQQ_weight', 0.0)):.0%}, "

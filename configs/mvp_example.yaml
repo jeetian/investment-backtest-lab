@@ -138,6 +138,11 @@ dca_policy_optimizer:
   top_n: 24
   fast_top_n: 12
   walk_forward_top_n: 5
+  cohort_validation_enabled: true
+  cohort_horizons_years: [5, 10, 15, 20]
+  rebalance_cadence: monthly
+  monitor_cadence: weekly
+  optuna_enabled: false
 
 cost_model:
   tw:

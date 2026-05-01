@@ -7,10 +7,13 @@ from investment_backtest_lab.dca_policy_optimizer import (
     VALIDATION_STABLE,
     VALIDATION_WATCHLIST,
     PolicyScenarioSpec,
+    _next_monthly_trading_date,
     apply_cross_mode_candidate_filter,
     apply_policy_validation,
+    build_cohort_summary,
     build_dca_policy_optimizer_outputs,
     build_policy_weights,
+    build_rolling_cohort_validation,
     policy_config_for_scan_mode,
     rank_policy_metrics,
     target_leverage_to_product_weights,
@@ -74,7 +77,7 @@ def test_trend_policy_uses_shifted_signal_to_avoid_lookahead():
     assert weights.sum(axis=1).to_numpy() == pytest.approx([1.0, 1.0, 1.0, 1.0])
 
 
-def test_policy_optimizer_outputs_dca_metrics_and_current_signal():
+def test_policy_optimizer_outputs_dca_metrics_and_allocation_signal():
     config = small_config()
     outputs = build_dca_policy_optimizer_outputs(
         actual_prices=sample_long_prices(),
@@ -86,7 +89,8 @@ def test_policy_optimizer_outputs_dca_metrics_and_current_signal():
 
     assert not outputs.metrics.empty
     assert not outputs.policy.empty
-    assert not outputs.current_signal.empty
+    assert not outputs.allocation_signal.empty
+    assert not outputs.cohort_summary.empty
     assert outputs.metrics["effective_leverage_max"].max() <= 3.0
     assert outputs.metrics["total_contributed"].min() >= config.dca_initial_cash
     assert {
@@ -99,6 +103,7 @@ def test_policy_optimizer_outputs_dca_metrics_and_current_signal():
         "effective_leverage_avg",
         "effective_leverage_max",
         "validation_status",
+        "cohort_validation_status",
         "eligible_for_candidate",
     }.issubset(outputs.metrics.columns)
     assert {
@@ -205,6 +210,98 @@ def test_walk_forward_splits_do_not_overlap_and_test_dca_restarts():
     assert walk["test_simple_cash_return"].to_numpy() == pytest.approx(expected.to_numpy())
 
 
+def test_rolling_cohorts_restart_dca_and_summarize_stability():
+    config = DCAPolicyOptimizerConfig(
+        target_leverage_grid=(1.0, 2.0),
+        trend_windows=(20,),
+        momentum_windows=(20,),
+        volatility_windows=(20,),
+        volatility_targets=(0.25,),
+        drawdown_guards=(-0.10, -0.20, -0.30, -0.50),
+        cohort_horizons_years=(2,),
+        walk_forward_top_n=2,
+    )
+    prices = sample_long_prices()
+    specs = [
+        PolicyScenarioSpec(
+            name="constant_1p0",
+            label="Constant 1.0x",
+            short_label="1.0x",
+            family="constant_leverage",
+            kind="constant",
+            params={"target": 1.0},
+        ),
+        PolicyScenarioSpec(
+            name="constant_2p0",
+            label="Constant 2.0x",
+            short_label="2.0x",
+            family="constant_leverage",
+            kind="constant",
+            params={"target": 2.0},
+        ),
+    ]
+
+    cohorts = build_rolling_cohort_validation(
+        mode_prices={"actual_etf": prices},
+        specs=specs,
+        products=sample_products(),
+        product_leverages={"QQQ": 1.0, "QLD": 2.0, "TQQQ": 3.0},
+        config=config,
+    )
+    summary = build_cohort_summary(cohorts)
+
+    assert not cohorts.empty
+    assert not summary.empty
+    assert cohorts["total_contributed"].min() >= 34_000.0
+    assert pd.to_datetime(cohorts["cohort_end"]).max() <= prices.index.max()
+    expected = cohorts["ending_equity"] / cohorts["total_contributed"] - 1.0
+    assert cohorts["simple_cash_return"].to_numpy() == pytest.approx(expected.to_numpy())
+    assert {
+        "median_cohort_xirr",
+        "worst_cohort_xirr",
+        "top3_hit_rate",
+        "rank_iqr",
+        "drawdown_breach_rate",
+    }.issubset(summary.columns)
+
+
+def test_allocation_signal_contains_next_dates_and_weight_sum():
+    outputs = build_dca_policy_optimizer_outputs(
+        actual_prices=sample_long_prices(),
+        synthetic_prices=pd.DataFrame(),
+        products=sample_products(),
+        config=small_config(),
+        scan_mode="fast",
+    )
+
+    signal = outputs.allocation_signal
+
+    assert not signal.empty
+    assert signal.iloc[0]["next_rebalance_date"]
+    assert signal.iloc[0]["next_monitor_date"]
+    assert signal["weight_sum"].iloc[0] == pytest.approx(1.0)
+    assert signal["target_effective_leverage"].max() <= 3.0
+
+
+def test_next_monthly_trading_date_skips_remaining_same_month_days():
+    trading_index = pd.DatetimeIndex(
+        [
+            "2025-12-29",
+            "2025-12-30",
+            "2025-12-31",
+            "2026-01-02",
+            "2026-01-05",
+        ]
+    )
+
+    next_rebalance = _next_monthly_trading_date(
+        trading_index,
+        pd.Timestamp("2025-12-30"),
+    )
+
+    assert next_rebalance == pd.Timestamp("2026-01-02")
+
+
 def test_dca_policy_optimizer_report_writes_html_and_csv(tmp_path):
     outputs = build_dca_policy_optimizer_outputs(
         actual_prices=sample_long_prices(),
@@ -225,11 +322,14 @@ def test_dca_policy_optimizer_report_writes_html_and_csv(tmp_path):
     assert result.metrics_path.exists()
     assert result.policy_path.exists()
     assert result.walk_forward_path.exists()
-    assert result.current_signal_path.exists()
+    assert result.cohorts_path.exists()
+    assert result.cohort_summary_path.exists()
+    assert result.allocation_signal_path.exists()
     html = result.html_path.read_text(encoding="utf-8")
     assert "DCA Policy Optimizer" in html
-    assert "Current Signal Board" in html
+    assert "Monthly Allocation Signal" in html
     assert "Best Candidates" in html
+    assert "Cohort Robustness" in html
     assert "Compare Lab" in html
     assert "不是投資建議" in html
     assert "policy CSV" in html
@@ -312,6 +412,7 @@ def small_config() -> DCAPolicyOptimizerConfig:
         top_n=6,
         fast_top_n=4,
         walk_forward_top_n=2,
+        cohort_horizons_years=(2,),
     )
 
 

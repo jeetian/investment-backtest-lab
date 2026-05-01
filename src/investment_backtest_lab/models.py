@@ -319,6 +319,11 @@ class DCAPolicyOptimizerConfig:
     top_n: int = 24
     fast_top_n: int = 12
     walk_forward_top_n: int = 5
+    cohort_validation_enabled: bool = True
+    cohort_horizons_years: tuple[int, ...] = (5, 10, 15, 20)
+    rebalance_cadence: str = "monthly"
+    monitor_cadence: str = "weekly"
+    optuna_enabled: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> DCAPolicyOptimizerConfig:
@@ -357,6 +362,13 @@ class DCAPolicyOptimizerConfig:
             top_n=int(data.get("top_n", 24)),
             fast_top_n=int(data.get("fast_top_n", 12)),
             walk_forward_top_n=int(data.get("walk_forward_top_n", 5)),
+            cohort_validation_enabled=bool(data.get("cohort_validation_enabled", True)),
+            cohort_horizons_years=tuple(
+                int(value) for value in data.get("cohort_horizons_years", [5, 10, 15, 20])
+            ),
+            rebalance_cadence=str(data.get("rebalance_cadence", "monthly")).lower(),
+            monitor_cadence=str(data.get("monitor_cadence", "weekly")).lower(),
+            optuna_enabled=bool(data.get("optuna_enabled", False)),
         )
 
 

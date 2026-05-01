@@ -46,7 +46,9 @@ class DCAPolicyOptimizerOutputs:
     curves: pd.DataFrame
     policy: pd.DataFrame
     walk_forward: pd.DataFrame
-    current_signal: pd.DataFrame
+    cohorts: pd.DataFrame
+    cohort_summary: pd.DataFrame
+    allocation_signal: pd.DataFrame
     payload: dict[str, Any]
     scan_mode: str
 
@@ -57,13 +59,17 @@ class DCAPolicyOptimizerReportResult:
     curves: pd.DataFrame
     policy: pd.DataFrame
     walk_forward: pd.DataFrame
-    current_signal: pd.DataFrame
+    cohorts: pd.DataFrame
+    cohort_summary: pd.DataFrame
+    allocation_signal: pd.DataFrame
     payload: dict[str, Any]
     html_path: Path
     metrics_path: Path
     policy_path: Path
     walk_forward_path: Path
-    current_signal_path: Path
+    cohorts_path: Path
+    cohort_summary_path: Path
+    allocation_signal_path: Path
     payload_path: Path
     scan_mode: str
 
@@ -131,6 +137,7 @@ def build_dca_policy_optimizer_outputs(
     products: list[ProductSpec],
     config: DCAPolicyOptimizerConfig,
     scan_mode: str,
+    cohort_validation: bool | None = None,
 ) -> DCAPolicyOptimizerOutputs:
     specs = build_policy_scenario_specs(config=config, products=products, scan_mode=scan_mode)
     product_leverages = {product.ticker: product.leverage for product in products}
@@ -177,8 +184,39 @@ def build_dca_policy_optimizer_outputs(
     )
     metrics = apply_policy_validation(metrics, walk_forward, config=config)
     metrics = apply_cross_mode_candidate_filter(metrics, config=config)
+    run_cohorts = (
+        config.cohort_validation_enabled
+        if cohort_validation is None
+        else cohort_validation
+    )
+    if run_cohorts:
+        pre_cohort_ranked = rank_policy_metrics(metrics)
+        cohort_specs = _selected_specs_for_cohort_validation(
+            metrics=pre_cohort_ranked,
+            specs=specs,
+            top_n=config.walk_forward_top_n,
+        )
+        cohorts = build_rolling_cohort_validation(
+            mode_prices=mode_prices,
+            specs=cohort_specs,
+            products=products,
+            product_leverages=product_leverages,
+            config=config,
+            base_curves=curves,
+        )
+        cohort_summary = build_cohort_summary(cohorts)
+        metrics = apply_cohort_validation(metrics, cohort_summary, config=config)
+    else:
+        cohorts = _empty_cohorts_frame()
+        cohort_summary = _empty_cohort_summary_frame()
+    metrics = apply_cross_mode_candidate_filter(metrics, config=config)
     metrics = rank_policy_metrics(metrics)
-    current_signal = build_current_signal(metrics=metrics, policy=policy, top_n=config.top_n)
+    allocation_signal = build_allocation_signal(
+        metrics=metrics,
+        policy=policy,
+        trading_index=_combined_trading_index(mode_prices),
+        top_n=config.top_n,
+    )
     payload = build_policy_compare_payload(
         metrics=metrics,
         curves=curves,
@@ -190,7 +228,9 @@ def build_dca_policy_optimizer_outputs(
         curves=curves,
         policy=policy,
         walk_forward=walk_forward,
-        current_signal=current_signal,
+        cohorts=cohorts,
+        cohort_summary=cohort_summary,
+        allocation_signal=allocation_signal,
         payload=payload,
         scan_mode=scan_mode,
     )
@@ -379,6 +419,247 @@ def build_policy_walk_forward_validation(
     return pd.DataFrame(rows)
 
 
+def build_rolling_cohort_validation(
+    *,
+    mode_prices: dict[str, pd.DataFrame],
+    specs: list[PolicyScenarioSpec],
+    products: list[ProductSpec],
+    product_leverages: dict[str, float],
+    config: DCAPolicyOptimizerConfig,
+    base_curves: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    source_curves = _cohort_source_curves(
+        mode_prices=mode_prices,
+        specs=specs,
+        products=products,
+        product_leverages=product_leverages,
+        config=config,
+        base_curves=base_curves,
+    )
+    curve_lookup = {
+        str(scenario_id): group.sort_values("date").reset_index(drop=True)
+        for scenario_id, group in source_curves.groupby("scenario_id")
+    }
+    for data_mode, prices in mode_prices.items():
+        starts = _cohort_start_dates(prices.index)
+        for horizon in config.cohort_horizons_years:
+            for start_date in starts:
+                end_date = _first_date_on_or_after(
+                    pd.DatetimeIndex(prices.index),
+                    start_date + pd.DateOffset(years=int(horizon)),
+                )
+                if end_date is None or end_date > prices.index[-1]:
+                    continue
+                cohort_rows: list[dict[str, Any]] = []
+                for spec in specs:
+                    scenario_id = f"{data_mode}--dca-policy-{spec.name}"
+                    source_curve = curve_lookup.get(scenario_id)
+                    if source_curve is None:
+                        continue
+                    cohort_curve = _cohort_curve_from_source(
+                        source_curve=source_curve,
+                        start_date=start_date,
+                        end_date=end_date,
+                        config=config,
+                    )
+                    if len(cohort_curve) < 120:
+                        continue
+                    cohort_rows.append(
+                        _metrics_row(
+                            curve=cohort_curve,
+                            data_mode=data_mode,
+                            scenario_id=scenario_id,
+                            scenario_label=spec.label,
+                            short_label=spec.short_label,
+                            strategy_family=spec.family,
+                            config=config,
+                        )
+                    )
+                if not cohort_rows:
+                    continue
+                cohort_metrics = (
+                    pd.DataFrame(cohort_rows)
+                    .sort_values(
+                        ["risk_failed", "xirr", "max_drawdown"],
+                        ascending=[True, False, False],
+                    )
+                    .reset_index(drop=True)
+                )
+                cohort_metrics["cohort_rank"] = cohort_metrics.index + 1
+                for row in cohort_metrics.itertuples():
+                    rows.append(
+                        {
+                            "data_mode": data_mode,
+                            "horizon_years": int(horizon),
+                            "cohort_start": start_date.date().isoformat(),
+                            "cohort_end": end_date.date().isoformat(),
+                            "scenario_id": row.scenario_id,
+                            "scenario_label": row.scenario_label,
+                            "strategy_family": row.strategy_family,
+                            "cohort_rank": int(row.cohort_rank),
+                            "total_contributed": row.total_contributed,
+                            "ending_equity": row.ending_equity,
+                            "simple_cash_return": row.simple_cash_return,
+                            "xirr": row.xirr,
+                            "max_drawdown": row.max_drawdown,
+                            "drawdown_breach": bool(
+                                float(row.max_drawdown) < config.max_drawdown_limit
+                            ),
+                            "risk_flag": row.risk_flag,
+                        }
+                    )
+    return pd.DataFrame(rows)
+
+
+def _cohort_source_curves(
+    *,
+    mode_prices: dict[str, pd.DataFrame],
+    specs: list[PolicyScenarioSpec],
+    products: list[ProductSpec],
+    product_leverages: dict[str, float],
+    config: DCAPolicyOptimizerConfig,
+    base_curves: pd.DataFrame | None,
+) -> pd.DataFrame:
+    selected_ids = {
+        f"{data_mode}--dca-policy-{spec.name}"
+        for data_mode in mode_prices
+        for spec in specs
+    }
+    if base_curves is not None and not base_curves.empty:
+        source = base_curves.loc[base_curves["scenario_id"].isin(selected_ids)].copy()
+        if not source.empty:
+            source["date"] = pd.to_datetime(source["date"])
+            if selected_ids.issubset(set(source["scenario_id"].astype(str))):
+                return source
+
+    frames: list[pd.DataFrame] = []
+    for data_mode, prices in mode_prices.items():
+        if prices.empty:
+            continue
+        _, curves, _ = _run_data_mode(
+            prices=prices,
+            data_mode=data_mode,
+            specs=specs,
+            products=products,
+            product_leverages=product_leverages,
+            config=config,
+        )
+        frames.append(curves)
+    if not frames:
+        return pd.DataFrame()
+    source = pd.concat(frames, ignore_index=True)
+    source["date"] = pd.to_datetime(source["date"])
+    return source.loc[source["scenario_id"].isin(selected_ids)].copy()
+
+
+def _cohort_curve_from_source(
+    *,
+    source_curve: pd.DataFrame,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    config: DCAPolicyOptimizerConfig,
+) -> pd.DataFrame:
+    data = source_curve.copy()
+    data["date"] = pd.to_datetime(data["date"])
+    data = data.loc[
+        (data["date"] >= pd.Timestamp(start_date))
+        & (data["date"] <= pd.Timestamp(end_date))
+    ].sort_values("date")
+    if data.empty:
+        return pd.DataFrame()
+
+    dates = pd.DatetimeIndex(data["date"])
+    returns = data["investment_return"].astype(float).to_numpy()
+    returns[0] = 0.0
+    if "effective_product_leverage" in data.columns:
+        leverage = data["effective_product_leverage"].astype(float).to_numpy()
+    else:
+        leverage = np.full(len(data), np.nan)
+    contribution_dates = monthly_rebalance_dates(dates)
+
+    equity = 0.0
+    total_contributed = 0.0
+    return_index = 1.0
+    peak_index = 1.0
+    rows: list[dict[str, Any]] = []
+    for position, date in enumerate(dates):
+        contribution = (
+            config.dca_contribution
+            if pd.Timestamp(date) in contribution_dates
+            else 0.0
+        )
+        if position == 0:
+            contribution += config.dca_initial_cash
+            equity = contribution
+            period_return = 0.0
+        else:
+            period_return = float(returns[position])
+            equity = equity * (1.0 + period_return) + contribution
+        total_contributed += contribution
+        return_index *= 1.0 + period_return
+        peak_index = max(peak_index, return_index)
+        rows.append(
+            {
+                "date": pd.Timestamp(date),
+                "total_equity": equity,
+                "contribution": contribution,
+                "total_contributed": total_contributed,
+                "cash": 0.0,
+                "effective_product_leverage": float(leverage[position]),
+                "investment_return": period_return,
+                "return_index": return_index,
+                "drawdown": return_index / peak_index - 1.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def build_cohort_summary(cohorts: pd.DataFrame) -> pd.DataFrame:
+    if cohorts.empty:
+        return _empty_cohort_summary_frame()
+    rows: list[dict[str, Any]] = []
+    for (data_mode, scenario_id), group in cohorts.groupby(["data_mode", "scenario_id"]):
+        ranks = group["cohort_rank"].astype(float)
+        rows.append(
+            {
+                "data_mode": data_mode,
+                "scenario_id": scenario_id,
+                "scenario_label": group["scenario_label"].iloc[0],
+                "strategy_family": group["strategy_family"].iloc[0],
+                "cohort_count": int(len(group)),
+                "median_cohort_xirr": float(group["xirr"].astype(float).median()),
+                "worst_cohort_xirr": float(group["xirr"].astype(float).min()),
+                "median_cohort_max_drawdown": float(
+                    group["max_drawdown"].astype(float).median()
+                ),
+                "worst_cohort_max_drawdown": float(group["max_drawdown"].astype(float).min()),
+                "top3_hit_rate": float((ranks <= 3).mean()),
+                "median_rank": float(ranks.median()),
+                "rank_iqr": float(ranks.quantile(0.75) - ranks.quantile(0.25)),
+                "drawdown_breach_rate": float(group["drawdown_breach"].astype(bool).mean()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _selected_specs_for_cohort_validation(
+    *,
+    metrics: pd.DataFrame,
+    specs: list[PolicyScenarioSpec],
+    top_n: int,
+) -> list[PolicyScenarioSpec]:
+    selected_keys = set(
+        metrics.sort_values(["data_mode", "rank"])
+        .groupby("data_mode")
+        .head(top_n)["scenario_id"]
+        .map(_policy_key)
+    )
+    spec_by_key = {f"dca-policy-{spec.name}": spec for spec in specs}
+    selected = [spec for key, spec in spec_by_key.items() if key in selected_keys]
+    return selected or specs[: min(len(specs), top_n)]
+
+
 def apply_policy_validation(
     metrics: pd.DataFrame,
     walk_forward: pd.DataFrame,
@@ -411,6 +692,51 @@ def apply_policy_validation(
     result["eligible_for_candidate"] = (
         (~result["risk_failed"].astype(bool))
         & (result["validation_status"] == VALIDATION_STABLE)
+    )
+    return result
+
+
+def apply_cohort_validation(
+    metrics: pd.DataFrame,
+    cohort_summary: pd.DataFrame,
+    *,
+    config: DCAPolicyOptimizerConfig,
+) -> pd.DataFrame:
+    result = metrics.copy()
+    default_columns = {
+        "cohort_count": 0,
+        "median_cohort_xirr": np.nan,
+        "worst_cohort_xirr": np.nan,
+        "median_cohort_max_drawdown": np.nan,
+        "worst_cohort_max_drawdown": np.nan,
+        "top3_hit_rate": np.nan,
+        "median_rank": np.nan,
+        "rank_iqr": np.nan,
+        "drawdown_breach_rate": np.nan,
+    }
+    for column, value in default_columns.items():
+        result[column] = value
+    result["cohort_validation_status"] = VALIDATION_UNVALIDATED
+    if not cohort_summary.empty:
+        enriched = cohort_summary.copy()
+        enriched["cohort_validation_status"] = enriched.apply(
+            lambda row: _cohort_validation_status(row, config=config),
+            axis=1,
+        )
+        columns = ["scenario_id", *default_columns.keys(), "cohort_validation_status"]
+        result = result.drop(columns=[*default_columns.keys(), "cohort_validation_status"]).merge(
+            enriched[columns],
+            on="scenario_id",
+            how="left",
+        )
+        for column, value in default_columns.items():
+            result[column] = result[column].fillna(value)
+        result["cohort_validation_status"] = result["cohort_validation_status"].fillna(
+            VALIDATION_UNVALIDATED
+        )
+    result["eligible_for_candidate"] = (
+        result["eligible_for_candidate"].astype(bool)
+        & result["cohort_validation_status"].isin({VALIDATION_STABLE, VALIDATION_WATCHLIST})
     )
     return result
 
@@ -499,6 +825,40 @@ def build_current_signal(
     return pd.DataFrame(rows)
 
 
+def build_allocation_signal(
+    *,
+    metrics: pd.DataFrame,
+    policy: pd.DataFrame,
+    trading_index: pd.DatetimeIndex,
+    top_n: int,
+) -> pd.DataFrame:
+    signal = build_current_signal(metrics=metrics, policy=policy, top_n=top_n)
+    if signal.empty:
+        return signal
+    as_of = pd.Timestamp(signal["as_of_date"].iloc[0])
+    next_rebalance = _next_monthly_trading_date(trading_index, as_of)
+    next_monitor = _next_weekly_monitor_date(as_of)
+    signal = signal.copy()
+    signal["next_rebalance_date"] = (
+        next_rebalance.date().isoformat() if next_rebalance is not None else ""
+    )
+    signal["next_monitor_date"] = next_monitor.date().isoformat()
+    signal["rebalance_cadence"] = "monthly"
+    signal["monitor_cadence"] = "weekly"
+    signal["review_now"] = signal["regime"].astype(str).str.contains(
+        "off|defensive|severe",
+        case=False,
+        regex=True,
+    )
+    signal["weight_sum"] = (
+        signal.get("QQQ_weight", 0.0).astype(float)
+        + signal.get("QLD_weight", 0.0).astype(float)
+        + signal.get("TQQQ_weight", 0.0).astype(float)
+        + signal.get("CASH_weight", 0.0).astype(float)
+    )
+    return signal
+
+
 def build_policy_compare_payload(
     *,
     metrics: pd.DataFrame,
@@ -577,12 +937,16 @@ def write_dca_policy_optimizer_report(
     metrics_path = output_dir / f"{prefix}_metrics.csv"
     policy_path = output_dir / f"{prefix}_policy.csv"
     walk_forward_path = output_dir / f"{prefix}_walk_forward.csv"
-    current_signal_path = output_dir / f"{prefix}_current_signal.csv"
+    cohorts_path = output_dir / f"{prefix}_cohorts.csv"
+    cohort_summary_path = output_dir / f"{prefix}_cohort_summary.csv"
+    allocation_signal_path = output_dir / f"{prefix}_allocation_signal.csv"
     payload_path = output_dir / f"{prefix}_compare_payload.json"
     outputs.metrics.to_csv(metrics_path, index=False)
     outputs.policy.to_csv(policy_path, index=False)
     outputs.walk_forward.to_csv(walk_forward_path, index=False)
-    outputs.current_signal.to_csv(current_signal_path, index=False)
+    outputs.cohorts.to_csv(cohorts_path, index=False)
+    outputs.cohort_summary.to_csv(cohort_summary_path, index=False)
+    outputs.allocation_signal.to_csv(allocation_signal_path, index=False)
     payload_path.write_text(
         json.dumps(outputs.payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -591,12 +955,16 @@ def write_dca_policy_optimizer_report(
         render_dca_policy_optimizer_html(
             metrics=outputs.metrics,
             walk_forward=outputs.walk_forward,
-            current_signal=outputs.current_signal,
+            cohorts=outputs.cohorts,
+            cohort_summary=outputs.cohort_summary,
+            allocation_signal=outputs.allocation_signal,
             payload=outputs.payload,
             metrics_path=metrics_path,
             policy_path=policy_path,
             walk_forward_path=walk_forward_path,
-            current_signal_path=current_signal_path,
+            cohorts_path=cohorts_path,
+            cohort_summary_path=cohort_summary_path,
+            allocation_signal_path=allocation_signal_path,
             payload_path=payload_path,
             config_path=config_path,
             scan_mode=outputs.scan_mode,
@@ -608,13 +976,17 @@ def write_dca_policy_optimizer_report(
         curves=outputs.curves,
         policy=outputs.policy,
         walk_forward=outputs.walk_forward,
-        current_signal=outputs.current_signal,
+        cohorts=outputs.cohorts,
+        cohort_summary=outputs.cohort_summary,
+        allocation_signal=outputs.allocation_signal,
         payload=outputs.payload,
         html_path=html_path,
         metrics_path=metrics_path,
         policy_path=policy_path,
         walk_forward_path=walk_forward_path,
-        current_signal_path=current_signal_path,
+        cohorts_path=cohorts_path,
+        cohort_summary_path=cohort_summary_path,
+        allocation_signal_path=allocation_signal_path,
         payload_path=payload_path,
         scan_mode=outputs.scan_mode,
     )
@@ -624,12 +996,16 @@ def render_dca_policy_optimizer_html(
     *,
     metrics: pd.DataFrame,
     walk_forward: pd.DataFrame,
-    current_signal: pd.DataFrame,
+    cohorts: pd.DataFrame,
+    cohort_summary: pd.DataFrame,
+    allocation_signal: pd.DataFrame,
     payload: dict[str, Any],
     metrics_path: Path,
     policy_path: Path,
     walk_forward_path: Path,
-    current_signal_path: Path,
+    cohorts_path: Path,
+    cohort_summary_path: Path,
+    allocation_signal_path: Path,
     payload_path: Path,
     config_path: Path,
     scan_mode: str,
@@ -639,6 +1015,10 @@ def render_dca_policy_optimizer_html(
     best = metrics[metrics["eligible_for_candidate"].astype(bool)].head(8)
     if best.empty:
         best = metrics[~metrics["risk_failed"].astype(bool)].head(8)
+    cohort_preview = cohort_summary.sort_values(
+        ["data_mode", "drawdown_breach_rate", "median_rank"],
+        ascending=[True, True, True],
+    ).head(16)
     return f"""<!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -791,10 +1171,13 @@ def render_dca_policy_optimizer_html(
   </section>
 
   <section class="panel">
-    <h2>Current Signal Board</h2>
-    <p>用目前排名較前的 Actual ETF 候選策略，顯示最新一天的 regime、權重與 effective leverage。</p>
-    {_render_signal_kpis(current_signal)}
-    <div class="table-wrap">{_render_table(current_signal.head(12), _signal_columns())}</div>
+    <h2>Monthly Allocation Signal</h2>
+    <p>
+      用通過驗證的 Actual ETF 候選策略，顯示最新研究配置。
+      正式節奏為每月調整，週度只做風險監控。
+    </p>
+    {_render_signal_kpis(allocation_signal)}
+    <div class="table-wrap">{_render_table(allocation_signal.head(12), _signal_columns())}</div>
   </section>
 
   <section class="panel">
@@ -821,6 +1204,12 @@ def render_dca_policy_optimizer_html(
   </section>
 
   <section class="panel">
+    <h2>Cohort Robustness</h2>
+    <p>每月第一個交易日作為 DCA 起點，檢查不同起點與不同持有期間下的排名是否穩定。</p>
+    <div class="table-wrap">{_render_table(cohort_preview, _cohort_summary_columns())}</div>
+  </section>
+
+  <section class="panel">
     <h2>Compare Lab</h2>
     <p>自由勾選候選策略疊圖。Normalized equity 只看路徑形狀，不作本金報酬排名。</p>
     <div class="compare-grid">
@@ -837,7 +1226,9 @@ def render_dca_policy_optimizer_html(
     <a href="{metrics_path.name}">metrics CSV</a>
     <a href="{policy_path.name}">policy CSV</a>
     <a href="{walk_forward_path.name}">walk-forward CSV</a>
-    <a href="{current_signal_path.name}">current signal CSV</a>
+    <a href="{cohorts_path.name}">cohorts CSV</a>
+    <a href="{cohort_summary_path.name}">cohort summary CSV</a>
+    <a href="{allocation_signal_path.name}">allocation signal CSV</a>
     <a href="{payload_path.name}">payload JSON</a>
   </section>
 </main>
@@ -1152,6 +1543,11 @@ def _policy_score(row: pd.Series) -> float:
         score -= 100.0
     elif row.get("validation_status") == VALIDATION_UNVALIDATED:
         score -= 10.0
+    if row.get("cohort_validation_status") == VALIDATION_FRAGILE:
+        score -= 100.0
+    score += 2.0 * _safe(row.get("top3_hit_rate"))
+    score -= 0.02 * _safe(row.get("median_rank"))
+    score -= 50.0 * _safe(row.get("drawdown_breach_rate"))
     return float(score)
 
 
@@ -1222,6 +1618,106 @@ def _first_date_on_or_after(
     if matches.empty:
         return None
     return pd.Timestamp(matches[0])
+
+
+def _cohort_start_dates(index: pd.Index) -> list[pd.Timestamp]:
+    dates = pd.DatetimeIndex(index).sort_values()
+    if dates.empty:
+        return []
+    grouped = pd.Series(dates, index=dates).groupby(dates.to_period("M")).first()
+    return [pd.Timestamp(value) for value in grouped]
+
+
+def _cohort_validation_status(
+    row: pd.Series,
+    *,
+    config: DCAPolicyOptimizerConfig,
+) -> str:
+    if int(row.get("cohort_count", 0) or 0) == 0:
+        return VALIDATION_UNVALIDATED
+    breach_rate = _safe(row.get("drawdown_breach_rate"))
+    worst_drawdown = _safe(row.get("worst_cohort_max_drawdown"))
+    top3_hit_rate = _safe(row.get("top3_hit_rate"))
+    worst_xirr = _safe(row.get("worst_cohort_xirr"))
+    if breach_rate > 0 or worst_drawdown < config.max_drawdown_limit:
+        return VALIDATION_FRAGILE
+    if top3_hit_rate >= 0.20 and worst_xirr > 0:
+        return VALIDATION_STABLE
+    return VALIDATION_WATCHLIST
+
+
+def _combined_trading_index(mode_prices: dict[str, pd.DataFrame]) -> pd.DatetimeIndex:
+    if not mode_prices:
+        return pd.DatetimeIndex([])
+    actual = mode_prices.get(DATA_MODE_ACTUAL)
+    if actual is not None and not actual.empty:
+        return pd.DatetimeIndex(actual.index).sort_values()
+    first = next(iter(mode_prices.values()))
+    return pd.DatetimeIndex(first.index).sort_values()
+
+
+def _next_monthly_trading_date(
+    trading_index: pd.DatetimeIndex,
+    as_of: pd.Timestamp,
+) -> pd.Timestamp | None:
+    next_period = as_of.to_period("M") + 1
+    future = trading_index[
+        (trading_index > as_of) & (trading_index.to_period("M") >= next_period)
+    ]
+    if future.empty:
+        return pd.Timestamp(next_period.start_time)
+    grouped = pd.Series(future, index=future).groupby(future.to_period("M")).first()
+    for value in grouped:
+        timestamp = pd.Timestamp(value)
+        if timestamp.to_period("M") >= next_period:
+            return timestamp
+    return None
+
+
+def _next_weekly_monitor_date(as_of: pd.Timestamp) -> pd.Timestamp:
+    return pd.Timestamp(as_of) + pd.Timedelta(days=7)
+
+
+def _empty_cohorts_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "data_mode",
+            "horizon_years",
+            "cohort_start",
+            "cohort_end",
+            "scenario_id",
+            "scenario_label",
+            "strategy_family",
+            "cohort_rank",
+            "total_contributed",
+            "ending_equity",
+            "simple_cash_return",
+            "xirr",
+            "max_drawdown",
+            "drawdown_breach",
+            "risk_flag",
+        ]
+    )
+
+
+def _empty_cohort_summary_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "data_mode",
+            "scenario_id",
+            "scenario_label",
+            "strategy_family",
+            "cohort_count",
+            "median_cohort_xirr",
+            "worst_cohort_xirr",
+            "median_cohort_max_drawdown",
+            "worst_cohort_max_drawdown",
+            "top3_hit_rate",
+            "median_rank",
+            "rank_iqr",
+            "drawdown_breach_rate",
+        ]
+    )
 
 
 def _xirr_from_curve(curve: pd.DataFrame) -> float:
@@ -1339,6 +1835,12 @@ def _format_cell(value: Any, key: str) -> str:
         "worst_test_drawdown",
         "test_xirr",
         "test_max_drawdown",
+        "median_cohort_xirr",
+        "worst_cohort_xirr",
+        "median_cohort_max_drawdown",
+        "worst_cohort_max_drawdown",
+        "top3_hit_rate",
+        "drawdown_breach_rate",
     }:
         return _format_percent(value)
     if key in {"ending_equity", "total_contributed", "test_ending_equity"}:
@@ -1376,6 +1878,7 @@ def _metric_columns() -> list[tuple[str, str]]:
         ("scenario_label", "Strategy"),
         ("validation_status", "Validation"),
         ("risk_flag", "Risk"),
+        ("cohort_validation_status", "Cohort"),
         ("xirr", "XIRR"),
         ("ending_equity", "Ending Equity"),
         ("total_contributed", "Contributed"),
@@ -1384,6 +1887,8 @@ def _metric_columns() -> list[tuple[str, str]]:
         ("recovery_days", "Recovery Days"),
         ("effective_leverage_avg", "Avg Lev"),
         ("effective_leverage_max", "Max Lev"),
+        ("top3_hit_rate", "Top 3 Hit"),
+        ("drawdown_breach_rate", "Breach Rate"),
     ]
 
 
@@ -1394,6 +1899,9 @@ def _signal_columns() -> list[tuple[str, str]]:
         ("as_of_date", "As Of"),
         ("regime", "Regime"),
         ("reason", "Reason"),
+        ("next_rebalance_date", "Next Rebalance"),
+        ("next_monitor_date", "Next Monitor"),
+        ("review_now", "Review Now"),
         ("target_effective_leverage", "Target Lev"),
         ("QQQ_weight", "QQQ"),
         ("QLD_weight", "QLD"),
@@ -1401,6 +1909,21 @@ def _signal_columns() -> list[tuple[str, str]]:
         ("CASH_weight", "CASH"),
         ("xirr", "XIRR"),
         ("max_drawdown", "Max DD"),
+    ]
+
+
+def _cohort_summary_columns() -> list[tuple[str, str]]:
+    return [
+        ("data_mode", "Mode"),
+        ("scenario_label", "Strategy"),
+        ("cohort_count", "Cohorts"),
+        ("median_cohort_xirr", "Median XIRR"),
+        ("worst_cohort_xirr", "Worst XIRR"),
+        ("worst_cohort_max_drawdown", "Worst DD"),
+        ("top3_hit_rate", "Top 3 Hit"),
+        ("median_rank", "Median Rank"),
+        ("rank_iqr", "Rank IQR"),
+        ("drawdown_breach_rate", "Breach Rate"),
     ]
 
 
@@ -1424,13 +1947,17 @@ __all__ = [
     "DCAPolicyOptimizerReportResult",
     "PolicyScenarioSpec",
     "apply_cross_mode_candidate_filter",
+    "apply_cohort_validation",
     "apply_policy_validation",
+    "build_allocation_signal",
+    "build_cohort_summary",
     "build_current_signal",
     "build_dca_policy_optimizer_outputs",
     "build_policy_compare_payload",
     "build_policy_scenario_specs",
     "build_policy_walk_forward_validation",
     "build_policy_weights",
+    "build_rolling_cohort_validation",
     "policy_config_for_scan_mode",
     "rank_policy_metrics",
     "render_dca_policy_optimizer_html",
