@@ -37,6 +37,20 @@ def main() -> None:
         default=DEFAULT_AUDIT_SCENARIO_ID,
         help="Scenario id to render in the Extreme Scenario Audit section.",
     )
+    validation_group = parser.add_mutually_exclusive_group()
+    validation_group.add_argument(
+        "--robust-validation",
+        dest="robust_validation",
+        action="store_true",
+        default=True,
+        help="Enable walk-forward and sensitivity validation. This is the default.",
+    )
+    validation_group.add_argument(
+        "--no-robust-validation",
+        dest="robust_validation",
+        action="store_false",
+        help="Skip walk-forward and sensitivity validation for a faster report.",
+    )
     parser.add_argument(
         "--scan-mode",
         choices=["fast", "full"],
@@ -87,16 +101,21 @@ def main() -> None:
         family=family,
         config_path=Path(args.config),
         audit_scenario_id=args.audit_scenario,
+        robust_validation_enabled=bool(args.robust_validation),
+        lab_config=lab,
     )
     print_terminal_summary(result.metrics)
     print(f"Scan mode:        {scan_mode}")
     print(f"Cash flow mode:   {args.cash_flow_mode or lab.cash_flow_mode}")
+    print(f"Robust validation:{bool(args.robust_validation)}")
     print(f"HTML report:      {result.html_path}")
     print(f"Metrics CSV:      {result.metrics_path}")
     print(f"Curves CSV:       {result.curves_path}")
     print(f"Allocations CSV:  {result.allocations_path}")
     print(f"Extreme Audit:    {result.extreme_audit_path}")
     print(f"DCA Optimizer:    {result.dca_optimizer_path}")
+    print(f"Walk-forward:     {result.walk_forward_path}")
+    print(f"Sensitivity:      {result.sensitivity_path}")
     print(f"Payload JSON:     {result.payload_path}")
 
 

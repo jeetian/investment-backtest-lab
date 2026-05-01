@@ -17,6 +17,10 @@ CASH_FLOW_LUMP_SUM = "lump_sum"
 CASH_FLOW_DCA = "dca"
 CASH_FLOW_BOTH = "both"
 DEFAULT_AUDIT_SCENARIO_ID = "synthetic-stress--dca-buy-hold-tqqq"
+DEFAULT_WALK_FORWARD_TRAIN_YEARS = 5
+DEFAULT_WALK_FORWARD_TEST_YEARS = 2
+DEFAULT_WALK_FORWARD_STEP_YEARS = 1
+DEFAULT_WALK_FORWARD_TOP_N = 5
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,8 @@ class LeveragedETFLabReportResult:
     allocations: pd.DataFrame
     extreme_audit: pd.DataFrame
     dca_optimizer: pd.DataFrame
+    walk_forward: pd.DataFrame
+    sensitivity: pd.DataFrame
     payload: dict[str, Any]
     html_path: Path
     metrics_path: Path
@@ -54,7 +60,10 @@ class LeveragedETFLabReportResult:
     allocations_path: Path
     extreme_audit_path: Path
     dca_optimizer_path: Path
+    walk_forward_path: Path
+    sensitivity_path: Path
     scan_mode: str
+    robust_validation_enabled: bool
 
 
 def lab_config_for_scan_mode(
@@ -540,26 +549,56 @@ def build_extreme_scenario_audit(
     return selected_curve[columns]
 
 
-def build_dca_optimizer(metrics: pd.DataFrame) -> pd.DataFrame:
+def build_dca_optimizer(
+    metrics: pd.DataFrame,
+    *,
+    walk_forward: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     dca = metrics[metrics["cash_flow_mode"] == CASH_FLOW_DCA].copy()
     if dca.empty:
         return _empty_dca_optimizer_frame()
+    validation = _validation_status_frame(walk_forward)
+    if not validation.empty:
+        dca = dca.merge(validation, on=["data_mode", "scenario_id"], how="left")
+    for column, default in {
+        "validation_folds": 0,
+        "validation_pass_rate": np.nan,
+        "mean_test_xirr": np.nan,
+        "worst_test_drawdown": np.nan,
+        "worst_test_recovery_days": np.nan,
+        "validation_status": "watchlist",
+    }.items():
+        if column not in dca.columns:
+            dca[column] = default
+        else:
+            dca[column] = dca[column].fillna(default)
+    dca.loc[dca["risk_failed"].astype(bool), "validation_status"] = "fragile"
     dca["eligible_for_robust_candidate"] = ~dca["risk_failed"].astype(bool)
+    dca["_validation_status_rank"] = (
+        dca["validation_status"].map({"stable": 0, "watchlist": 1, "fragile": 2}).fillna(1)
+    )
     dca = dca.sort_values(
         [
             "data_mode",
             "eligible_for_robust_candidate",
+            "_validation_status_rank",
             "robust_score",
             "xirr",
             "simple_cash_return",
         ],
-        ascending=[True, False, False, False, False],
+        ascending=[True, False, True, False, False, False],
     )
     dca["optimizer_rank"] = dca.groupby("data_mode").cumcount() + 1
     columns = [
         "data_mode",
         "optimizer_rank",
         "eligible_for_robust_candidate",
+        "validation_status",
+        "validation_folds",
+        "validation_pass_rate",
+        "mean_test_xirr",
+        "worst_test_drawdown",
+        "worst_test_recovery_days",
         "scenario_id",
         "scenario_label",
         "strategy_family",
@@ -580,6 +619,158 @@ def build_dca_optimizer(metrics: pd.DataFrame) -> pd.DataFrame:
     return dca[columns].reset_index(drop=True)
 
 
+def build_walk_forward_validation(
+    *,
+    metrics: pd.DataFrame,
+    curves: pd.DataFrame,
+    lab_config: LeveragedETFLabConfig,
+    top_n: int = DEFAULT_WALK_FORWARD_TOP_N,
+    train_years: int = DEFAULT_WALK_FORWARD_TRAIN_YEARS,
+    test_years: int = DEFAULT_WALK_FORWARD_TEST_YEARS,
+    step_years: int = DEFAULT_WALK_FORWARD_STEP_YEARS,
+) -> pd.DataFrame:
+    dca_metrics = metrics[metrics["cash_flow_mode"] == CASH_FLOW_DCA].copy()
+    dca_curves = curves[curves["cash_flow_mode"] == CASH_FLOW_DCA].copy()
+    if dca_metrics.empty or dca_curves.empty:
+        return _empty_walk_forward_frame()
+
+    rows: list[dict[str, Any]] = []
+    for data_mode, mode_curves in dca_curves.groupby("data_mode"):
+        mode_curves = mode_curves.copy()
+        mode_curves["date"] = pd.to_datetime(mode_curves["date"])
+        mode_metrics = dca_metrics[dca_metrics["data_mode"] == data_mode].copy()
+        folds = _walk_forward_folds(
+            mode_curves["date"],
+            train_years=train_years,
+            test_years=test_years,
+            step_years=step_years,
+        )
+        for fold_index, fold in enumerate(folds, start=1):
+            train_rows: list[dict[str, Any]] = []
+            scenario_groups = mode_curves.groupby("scenario_id", sort=False)
+            for scenario_id, group in scenario_groups:
+                metric = mode_metrics[mode_metrics["scenario_id"] == scenario_id]
+                if metric.empty:
+                    continue
+                train_curve = _period_dca_curve(
+                    group,
+                    start=fold["train_start"],
+                    end=fold["train_end"],
+                    lab_config=lab_config,
+                )
+                if train_curve.empty:
+                    continue
+                train_metric = _period_validation_metric(
+                    curve=train_curve,
+                    data_mode=data_mode,
+                    lab_config=lab_config,
+                )
+                train_metric["scenario_id"] = scenario_id
+                train_metric["scenario_label"] = metric.iloc[0]["scenario_label"]
+                train_metric["strategy_family"] = metric.iloc[0]["strategy_family"]
+                train_rows.append(train_metric)
+            if not train_rows:
+                continue
+            train_ranked = _rank_period_metrics(pd.DataFrame(train_rows)).head(top_n)
+            for train_rank, train_metric in enumerate(train_ranked.itertuples(), start=1):
+                group = scenario_groups.get_group(train_metric.scenario_id)
+                test_curve = _period_dca_curve(
+                    group,
+                    start=fold["test_start"],
+                    end=fold["test_end"],
+                    lab_config=lab_config,
+                )
+                if test_curve.empty:
+                    continue
+                test_metric = _period_validation_metric(
+                    curve=test_curve,
+                    data_mode=data_mode,
+                    lab_config=lab_config,
+                )
+                rows.append(
+                    {
+                        "data_mode": data_mode,
+                        "fold_index": fold_index,
+                        "scenario_id": train_metric.scenario_id,
+                        "scenario_label": train_metric.scenario_label,
+                        "strategy_family": train_metric.strategy_family,
+                        "train_start": fold["train_start"].date().isoformat(),
+                        "train_end": fold["train_end"].date().isoformat(),
+                        "test_start": fold["test_start"].date().isoformat(),
+                        "test_end": fold["test_end"].date().isoformat(),
+                        "train_rank": train_rank,
+                        "train_robust_score": train_metric.robust_score,
+                        "train_xirr": train_metric.xirr,
+                        "train_max_drawdown": train_metric.max_drawdown,
+                        "test_total_contributed": test_metric["total_contributed"],
+                        "test_ending_equity": test_metric["ending_equity"],
+                        "test_simple_cash_return": test_metric["simple_cash_return"],
+                        "test_xirr": test_metric["xirr"],
+                        "test_max_drawdown": test_metric["max_drawdown"],
+                        "test_recovery_days": test_metric["max_recovery_days"],
+                        "test_risk_flag": test_metric["risk_flag"],
+                        "test_risk_failed": test_metric["risk_failed"],
+                        "passed_fold": (
+                            not bool(test_metric["risk_failed"])
+                            and float(test_metric["max_drawdown"])
+                            > lab_config.high_risk_drawdown
+                        ),
+                    }
+                )
+    if not rows:
+        return _empty_walk_forward_frame()
+    return pd.DataFrame(rows)
+
+
+def build_parameter_sensitivity(metrics: pd.DataFrame) -> pd.DataFrame:
+    dca = metrics[metrics["cash_flow_mode"] == CASH_FLOW_DCA].copy()
+    if dca.empty:
+        return _empty_sensitivity_frame()
+    rows: list[dict[str, Any]] = []
+    for (data_mode, family), group in dca.groupby(["data_mode", "strategy_family"]):
+        robust_q75 = float(group["robust_score"].quantile(0.75))
+        robust_q25 = float(group["robust_score"].quantile(0.25))
+        ok_ratio = float((group["risk_flag"] == "ok").mean())
+        worst_drawdown = float(group["max_drawdown"].min())
+        scenario_count = int(len(group))
+        status = "stable"
+        if scenario_count < 3 or ok_ratio < 0.60 or worst_drawdown <= -0.85:
+            status = "fragile"
+        elif ok_ratio < 0.80 or (robust_q75 - robust_q25) > 25.0:
+            status = "watchlist"
+        best = group.sort_values(
+            ["risk_failed", "robust_score", "xirr"],
+            ascending=[True, False, False],
+        ).iloc[0]
+        rows.append(
+            {
+                "data_mode": data_mode,
+                "strategy_family": family,
+                "scenario_count": scenario_count,
+                "median_xirr": float(group["xirr"].median()),
+                "median_robust_score": float(group["robust_score"].median()),
+                "robust_score_iqr": robust_q75 - robust_q25,
+                "worst_max_drawdown": worst_drawdown,
+                "risk_flag_ok_ratio": ok_ratio,
+                "best_scenario_id": best["scenario_id"],
+                "best_scenario_label": best["scenario_label"],
+                "sensitivity_status": status,
+            }
+        )
+    result = pd.DataFrame(rows)
+    result["_sensitivity_status_rank"] = (
+        result["sensitivity_status"].map({"stable": 0, "watchlist": 1, "fragile": 2}).fillna(1)
+    )
+    return (
+        result.sort_values(
+            ["data_mode", "_sensitivity_status_rank", "median_robust_score"],
+            ascending=[True, True, False],
+        )
+        .drop(columns=["_sensitivity_status_rank"])
+        .reset_index(drop=True)
+    )
+
+
 def write_leveraged_etf_lab_report(
     *,
     outputs: LeveragedETFLabOutputs,
@@ -587,6 +778,8 @@ def write_leveraged_etf_lab_report(
     family: str,
     config_path: Path,
     audit_scenario_id: str = DEFAULT_AUDIT_SCENARIO_ID,
+    robust_validation_enabled: bool = True,
+    lab_config: LeveragedETFLabConfig | None = None,
 ) -> LeveragedETFLabReportResult:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -598,18 +791,37 @@ def write_leveraged_etf_lab_report(
     allocations_path = output_dir / f"leveraged_etf_{slug}_allocations.csv"
     extreme_audit_path = output_dir / f"leveraged_etf_{slug}_extreme_audit.csv"
     dca_optimizer_path = output_dir / f"leveraged_etf_{slug}_dca_optimizer.csv"
+    walk_forward_path = output_dir / f"leveraged_etf_{slug}_walk_forward.csv"
+    sensitivity_path = output_dir / f"leveraged_etf_{slug}_sensitivity.csv"
     extreme_audit = build_extreme_scenario_audit(
         metrics=outputs.metrics,
         curves=outputs.curves,
         audit_scenario_id=audit_scenario_id,
     )
-    dca_optimizer = build_dca_optimizer(outputs.metrics)
+    validation_config = lab_config or LeveragedETFLabConfig()
+    walk_forward = (
+        build_walk_forward_validation(
+            metrics=outputs.metrics,
+            curves=outputs.curves,
+            lab_config=validation_config,
+        )
+        if robust_validation_enabled
+        else _empty_walk_forward_frame()
+    )
+    sensitivity = (
+        build_parameter_sensitivity(outputs.metrics)
+        if robust_validation_enabled
+        else _empty_sensitivity_frame()
+    )
+    dca_optimizer = build_dca_optimizer(outputs.metrics, walk_forward=walk_forward)
 
     outputs.metrics.to_csv(metrics_path, index=False, encoding="utf-8")
     outputs.curves.to_csv(curves_path, index=False, encoding="utf-8")
     outputs.allocations.to_csv(allocations_path, index=False, encoding="utf-8")
     extreme_audit.to_csv(extreme_audit_path, index=False, encoding="utf-8")
     dca_optimizer.to_csv(dca_optimizer_path, index=False, encoding="utf-8")
+    walk_forward.to_csv(walk_forward_path, index=False, encoding="utf-8")
+    sensitivity.to_csv(sensitivity_path, index=False, encoding="utf-8")
     payload_path.write_text(
         json.dumps(outputs.payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -619,6 +831,8 @@ def write_leveraged_etf_lab_report(
             metrics=outputs.metrics,
             extreme_audit=extreme_audit,
             dca_optimizer=dca_optimizer,
+            walk_forward=walk_forward,
+            sensitivity=sensitivity,
             payload=outputs.payload,
             family=family,
             scan_mode=outputs.scan_mode,
@@ -628,7 +842,10 @@ def write_leveraged_etf_lab_report(
             allocations_path=allocations_path,
             extreme_audit_path=extreme_audit_path,
             dca_optimizer_path=dca_optimizer_path,
+            walk_forward_path=walk_forward_path,
+            sensitivity_path=sensitivity_path,
             payload_path=payload_path,
+            robust_validation_enabled=robust_validation_enabled,
         ),
         encoding="utf-8",
     )
@@ -638,6 +855,8 @@ def write_leveraged_etf_lab_report(
         allocations=outputs.allocations,
         extreme_audit=extreme_audit,
         dca_optimizer=dca_optimizer,
+        walk_forward=walk_forward,
+        sensitivity=sensitivity,
         payload=outputs.payload,
         html_path=html_path,
         metrics_path=metrics_path,
@@ -646,7 +865,10 @@ def write_leveraged_etf_lab_report(
         allocations_path=allocations_path,
         extreme_audit_path=extreme_audit_path,
         dca_optimizer_path=dca_optimizer_path,
+        walk_forward_path=walk_forward_path,
+        sensitivity_path=sensitivity_path,
         scan_mode=outputs.scan_mode,
+        robust_validation_enabled=robust_validation_enabled,
     )
 
 
@@ -655,6 +877,8 @@ def render_leveraged_etf_lab_html(
     metrics: pd.DataFrame,
     extreme_audit: pd.DataFrame,
     dca_optimizer: pd.DataFrame,
+    walk_forward: pd.DataFrame,
+    sensitivity: pd.DataFrame,
     payload: dict[str, Any],
     family: str,
     scan_mode: str,
@@ -664,7 +888,10 @@ def render_leveraged_etf_lab_html(
     allocations_path: Path,
     extreme_audit_path: Path,
     dca_optimizer_path: Path,
+    walk_forward_path: Path,
+    sensitivity_path: Path,
     payload_path: Path,
+    robust_validation_enabled: bool,
 ) -> str:
     payload_json = _json_for_script(payload)
     audit_payload_json = _json_for_script(_audit_payload(extreme_audit))
@@ -754,6 +981,14 @@ def render_leveraged_etf_lab_html(
 
     {_dca_optimizer_section(dca_optimizer, dca_optimizer_path)}
 
+    {_robustness_validation_section(
+        walk_forward,
+        sensitivity,
+        walk_forward_path,
+        sensitivity_path,
+        robust_validation_enabled=robust_validation_enabled,
+    )}
+
     <section class="section-block compare-lab">
       <div class="section-heading">
         <div>
@@ -805,6 +1040,8 @@ def render_leveraged_etf_lab_html(
         <a class="audit-link" href="{escape(allocations_path.name)}">allocations CSV</a>
         <a class="audit-link" href="{escape(extreme_audit_path.name)}">extreme audit CSV</a>
         <a class="audit-link" href="{escape(dca_optimizer_path.name)}">DCA optimizer CSV</a>
+        <a class="audit-link" href="{escape(walk_forward_path.name)}">walk-forward CSV</a>
+        <a class="audit-link" href="{escape(sensitivity_path.name)}">sensitivity CSV</a>
         <a class="audit-link" href="{escape(payload_path.name)}">compare payload JSON</a>
         <span class="audit-note">config: {escape(str(config_path))}</span>
       </div>
@@ -1514,11 +1751,14 @@ def _dca_optimizer_section(optimizer: pd.DataFrame, optimizer_path: Path) -> str
     columns = [
         ("optimizer_rank", "排名"),
         ("eligible_for_robust_candidate", "可作穩健候選"),
+        ("validation_status", "驗證狀態"),
+        ("validation_pass_rate", "WF 通過率"),
         ("scenario_label", "情境"),
         ("ending_equity", "期末資產"),
         ("simple_cash_return", "Simple Return"),
         ("xirr", "XIRR"),
         ("max_drawdown", "最大回撤"),
+        ("worst_test_drawdown", "最差 OOS 回撤"),
         ("max_recovery_days", "修復天數"),
         ("robust_score", "Robust Score"),
         ("risk_flag", "風險旗標"),
@@ -1550,6 +1790,46 @@ def _dca_optimizer_section(optimizer: pd.DataFrame, optimizer_path: Path) -> str
   {synthetic_table}
   <div class="audit-links">
     <a class="audit-link" href="{escape(optimizer_path.name)}">下載 DCA optimizer CSV</a>
+  </div>
+</section>"""
+
+
+def _robustness_validation_section(
+    walk_forward: pd.DataFrame,
+    sensitivity: pd.DataFrame,
+    walk_forward_path: Path,
+    sensitivity_path: Path,
+    *,
+    robust_validation_enabled: bool,
+) -> str:
+    if not robust_validation_enabled:
+        return """<section class="section-block">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Robustness Validation</p>
+      <h2>穩健性驗證</h2>
+    </div>
+    <p>本次報表使用 --no-robust-validation，已跳過 walk-forward 與參數敏感度。</p>
+  </div>
+</section>"""
+    walk_table = _walk_forward_summary_table(walk_forward)
+    sensitivity_table = _sensitivity_summary_table(sensitivity)
+    return f"""<section class="section-block">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Robustness Validation</p>
+      <h2>防過擬合驗證</h2>
+    </div>
+    <p>
+      Walk-forward 會先在 train 區間選出 robust_score 前段策略，再把同一策略丟到下一段 test
+      重新以 DCA 現金流計算。未通過這層檢查的策略不能當作最終候選。
+    </p>
+  </div>
+  {walk_table}
+  {sensitivity_table}
+  <div class="audit-links">
+    <a class="audit-link" href="{escape(walk_forward_path.name)}">下載 walk-forward CSV</a>
+    <a class="audit-link" href="{escape(sensitivity_path.name)}">下載 sensitivity CSV</a>
   </div>
 </section>"""
 
@@ -1595,6 +1875,80 @@ def _audit_payload(audit: pd.DataFrame) -> dict[str, Any]:
             "contribution": _json_series(data["contribution"]),
         },
     }
+
+
+def _walk_forward_summary_table(walk_forward: pd.DataFrame) -> str:
+    if walk_forward.empty:
+        return """<section class="mode-board">
+  <div class="mode-board-heading">
+    <h3>Walk-Forward Summary</h3>
+    <p>資料期間不足或未啟用 robust validation，沒有可顯示的 folds。</p>
+  </div>
+</section>"""
+    summary = (
+        walk_forward.groupby(["data_mode", "scenario_id", "scenario_label"], as_index=False)
+        .agg(
+            validation_folds=("fold_index", "nunique"),
+            validation_pass_rate=("passed_fold", "mean"),
+            mean_test_xirr=("test_xirr", "mean"),
+            worst_test_drawdown=("test_max_drawdown", "min"),
+            worst_test_recovery_days=("test_recovery_days", "max"),
+            failed_folds=("test_risk_failed", "sum"),
+        )
+        .sort_values(
+            ["data_mode", "validation_pass_rate", "mean_test_xirr"],
+            ascending=[True, False, False],
+        )
+        .groupby("data_mode")
+        .head(8)
+        .copy()
+    )
+    columns = [
+        ("data_mode", "資料模式"),
+        ("scenario_label", "情境"),
+        ("validation_folds", "folds"),
+        ("validation_pass_rate", "通過率"),
+        ("mean_test_xirr", "平均 OOS XIRR"),
+        ("worst_test_drawdown", "最差 OOS 回撤"),
+        ("worst_test_recovery_days", "最長修復天數"),
+        ("failed_folds", "失敗 folds"),
+    ]
+    return _render_metric_table(
+        summary,
+        title="Walk-Forward Summary",
+        copy="每個 fold 只用 train 選策略，再看下一段 test 的 DCA 結果。",
+        columns=columns,
+    )
+
+
+def _sensitivity_summary_table(sensitivity: pd.DataFrame) -> str:
+    if sensitivity.empty:
+        return ""
+    display = sensitivity.copy()
+    display["_sensitivity_status_rank"] = (
+        display["sensitivity_status"].map({"stable": 0, "watchlist": 1, "fragile": 2}).fillna(1)
+    )
+    display = display.sort_values(
+        ["data_mode", "_sensitivity_status_rank", "median_robust_score"],
+        ascending=[True, True, False],
+    ).drop(columns=["_sensitivity_status_rank"])
+    columns = [
+        ("data_mode", "資料模式"),
+        ("strategy_family", "策略族群"),
+        ("sensitivity_status", "敏感度狀態"),
+        ("scenario_count", "參數數"),
+        ("median_xirr", "Median XIRR"),
+        ("worst_max_drawdown", "最差 MDD"),
+        ("risk_flag_ok_ratio", "OK 比率"),
+        ("robust_score_iqr", "Robust IQR"),
+        ("best_scenario_label", "族群最佳候選"),
+    ]
+    return _render_metric_table(
+        display,
+        title="Parameter Sensitivity",
+        copy="觀察同一策略族群的參數是否穩定；只有單一參數漂亮會被標成 fragile 或 watchlist。",
+        columns=columns,
+    )
 
 
 def _metrics_tables_by_mode(metrics: pd.DataFrame) -> str:
@@ -1729,12 +2083,26 @@ def _render_metric_table(
                 "xirr",
                 "worst_segment_return",
                 "worst_segment_drawdown",
+                "validation_pass_rate",
+                "mean_test_xirr",
+                "worst_test_drawdown",
+                "median_xirr",
+                "worst_max_drawdown",
+                "risk_flag_ok_ratio",
             }:
                 text = _format_percent(value)
-            elif column in {"calmar", "sortino", "robust_score"}:
+            elif column in {
+                "calmar",
+                "sortino",
+                "robust_score",
+                "robust_score_iqr",
+                "median_robust_score",
+            }:
                 text = _format_number(value)
             elif column in {"total_contributed", "ending_equity"}:
                 text = _format_money(value)
+            elif column in {"eligible_for_robust_candidate"}:
+                text = "yes" if bool(value) else "no"
             else:
                 text = str(value)
             cells.append(f"<td>{escape(text)}</td>")
@@ -2390,6 +2758,189 @@ def _best_metric(metrics: pd.DataFrame, data_mode: str) -> pd.Series | None:
     return selected.iloc[0]
 
 
+def _validation_status_frame(walk_forward: pd.DataFrame | None) -> pd.DataFrame:
+    if walk_forward is None or walk_forward.empty:
+        return pd.DataFrame()
+    summary = (
+        walk_forward.groupby(["data_mode", "scenario_id"], as_index=False)
+        .agg(
+            validation_folds=("fold_index", "nunique"),
+            validation_pass_rate=("passed_fold", "mean"),
+            mean_test_xirr=("test_xirr", "mean"),
+            worst_test_drawdown=("test_max_drawdown", "min"),
+            worst_test_recovery_days=("test_recovery_days", "max"),
+            failed_folds=("test_risk_failed", "sum"),
+        )
+        .copy()
+    )
+    summary["validation_status"] = summary.apply(_validation_status_from_row, axis=1)
+    return summary[
+        [
+            "data_mode",
+            "scenario_id",
+            "validation_folds",
+            "validation_pass_rate",
+            "mean_test_xirr",
+            "worst_test_drawdown",
+            "worst_test_recovery_days",
+            "validation_status",
+        ]
+    ]
+
+
+def _validation_status_from_row(row: pd.Series) -> str:
+    if int(row["validation_folds"]) == 0:
+        return "watchlist"
+    if float(row["validation_pass_rate"]) >= 0.70 and float(row["worst_test_drawdown"]) > -0.75:
+        return "stable"
+    if float(row["validation_pass_rate"]) >= 0.40:
+        return "watchlist"
+    return "fragile"
+
+
+def _walk_forward_folds(
+    dates: pd.Series,
+    *,
+    train_years: int,
+    test_years: int,
+    step_years: int,
+) -> list[dict[str, pd.Timestamp]]:
+    ordered = pd.Series(pd.to_datetime(dates).dropna().sort_values().unique())
+    if ordered.empty:
+        return []
+    min_date = pd.Timestamp(ordered.iloc[0])
+    max_date = pd.Timestamp(ordered.iloc[-1])
+    cursor = min_date
+    folds: list[dict[str, pd.Timestamp]] = []
+    while True:
+        train_end_target = cursor + pd.DateOffset(years=train_years)
+        test_end_target = train_end_target + pd.DateOffset(years=test_years)
+        if test_end_target > max_date:
+            break
+        train_start = _first_trading_date_on_or_after(ordered, cursor)
+        train_end = _first_trading_date_on_or_after(ordered, train_end_target)
+        test_start = train_end
+        test_end = _first_trading_date_on_or_after(ordered, test_end_target)
+        if train_start is not None and train_end is not None and test_end is not None:
+            if train_start < train_end < test_end:
+                folds.append(
+                    {
+                        "train_start": train_start,
+                        "train_end": train_end,
+                        "test_start": test_start,
+                        "test_end": test_end,
+                    }
+                )
+        cursor = cursor + pd.DateOffset(years=step_years)
+    return folds
+
+
+def _first_trading_date_on_or_after(
+    ordered_dates: pd.Series,
+    target: pd.Timestamp,
+) -> pd.Timestamp | None:
+    selected = ordered_dates[ordered_dates >= pd.Timestamp(target)]
+    if selected.empty:
+        return None
+    return pd.Timestamp(selected.iloc[0])
+
+
+def _period_dca_curve(
+    group: pd.DataFrame,
+    *,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    lab_config: LeveragedETFLabConfig,
+) -> pd.DataFrame:
+    data = group.copy()
+    data["date"] = pd.to_datetime(data["date"])
+    data = data[(data["date"] >= start) & (data["date"] < end)].sort_values("date")
+    if len(data) < 2:
+        return pd.DataFrame()
+    contribution_dates = monthly_rebalance_dates(data["date"])
+    equity = 0.0
+    total_contributed = 0.0
+    rows: list[dict[str, Any]] = []
+    for position, row in enumerate(data.itertuples()):
+        date = pd.Timestamp(row.date)
+        contribution = lab_config.dca_contribution if date in contribution_dates else 0.0
+        period_return = 0.0 if position == 0 else float(row.investment_return)
+        if position == 0:
+            contribution += lab_config.dca_initial_cash
+            equity = contribution
+        else:
+            equity = equity * (1.0 + period_return) + contribution
+        total_contributed += contribution
+        rows.append(
+            {
+                "date": date,
+                "total_equity": equity,
+                "contribution": contribution,
+                "total_contributed": total_contributed,
+                "investment_return": period_return,
+            }
+        )
+    curve = pd.DataFrame(rows)
+    curve["return_index"] = (1.0 + curve["investment_return"]).cumprod()
+    curve["drawdown"] = curve["return_index"] / curve["return_index"].cummax() - 1.0
+    return curve
+
+
+def _period_validation_metric(
+    *,
+    curve: pd.DataFrame,
+    data_mode: str,
+    lab_config: LeveragedETFLabConfig,
+) -> dict[str, Any]:
+    returns = curve["investment_return"].astype(float).dropna()
+    summary = performance_summary(returns) if not returns.empty else pd.Series(dtype=float)
+    drawdown = curve["drawdown"].astype(float)
+    max_drawdown = float(drawdown.min()) if not drawdown.empty else np.nan
+    recovery_days, recovered = _max_recovery_days(curve["return_index"], curve["date"])
+    total_contributed = float(curve["total_contributed"].iloc[-1])
+    ending_equity = float(curve["total_equity"].iloc[-1])
+    simple_cash_return = ending_equity / total_contributed - 1.0 if total_contributed else np.nan
+    worst_return, worst_drawdown = _worst_segment_metrics(curve)
+    risk_flag = _risk_flag(
+        data_mode=data_mode,
+        max_drawdown=max_drawdown,
+        high_risk_drawdown=lab_config.high_risk_drawdown,
+        synthetic_failure_drawdown=lab_config.synthetic_failure_drawdown,
+    )
+    row = {
+        "ending_equity": ending_equity,
+        "total_contributed": total_contributed,
+        "total_return": _summary_value(summary, "total_return"),
+        "simple_cash_return": simple_cash_return,
+        "xirr": _xirr_from_curve(curve),
+        "cagr": _summary_value(summary, "cagr"),
+        "volatility": _summary_value(summary, "volatility"),
+        "sharpe": _summary_value(summary, "sharpe"),
+        "sortino": _summary_value(summary, "sortino"),
+        "calmar": _summary_value(summary, "calmar"),
+        "max_drawdown": max_drawdown,
+        "max_recovery_days": recovery_days,
+        "worst_segment_return": worst_return,
+        "worst_segment_drawdown": worst_drawdown,
+        "recovered": recovered,
+        "cash_flow_mode": CASH_FLOW_DCA,
+        "risk_flag": risk_flag,
+        "risk_failed": risk_flag in {"high_drawdown", "synthetic_stress_failed"},
+    }
+    row["rank_score"] = _risk_adjusted_score(pd.Series(row))
+    row["robust_score"] = _robust_score(pd.Series(row))
+    return row
+
+
+def _rank_period_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
+    ranked = metrics.copy()
+    ranked["risk_failed"] = ranked["risk_failed"].astype(bool)
+    return ranked.sort_values(
+        ["risk_failed", "robust_score", "xirr"],
+        ascending=[True, False, False],
+    ).reset_index(drop=True)
+
+
 def _empty_extreme_audit_frame() -> pd.DataFrame:
     return pd.DataFrame(
         columns=[
@@ -2429,6 +2980,12 @@ def _empty_dca_optimizer_frame() -> pd.DataFrame:
             "data_mode",
             "optimizer_rank",
             "eligible_for_robust_candidate",
+            "validation_status",
+            "validation_folds",
+            "validation_pass_rate",
+            "mean_test_xirr",
+            "worst_test_drawdown",
+            "worst_test_recovery_days",
             "scenario_id",
             "scenario_label",
             "strategy_family",
@@ -2445,6 +3002,53 @@ def _empty_dca_optimizer_frame() -> pd.DataFrame:
             "robust_score",
             "risk_flag",
             "risk_failed",
+        ]
+    )
+
+
+def _empty_walk_forward_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "data_mode",
+            "fold_index",
+            "scenario_id",
+            "scenario_label",
+            "strategy_family",
+            "train_start",
+            "train_end",
+            "test_start",
+            "test_end",
+            "train_rank",
+            "train_robust_score",
+            "train_xirr",
+            "train_max_drawdown",
+            "test_total_contributed",
+            "test_ending_equity",
+            "test_simple_cash_return",
+            "test_xirr",
+            "test_max_drawdown",
+            "test_recovery_days",
+            "test_risk_flag",
+            "test_risk_failed",
+            "passed_fold",
+        ]
+    )
+
+
+def _empty_sensitivity_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "data_mode",
+            "strategy_family",
+            "scenario_count",
+            "median_xirr",
+            "median_robust_score",
+            "robust_score_iqr",
+            "worst_max_drawdown",
+            "risk_flag_ok_ratio",
+            "best_scenario_id",
+            "best_scenario_label",
+            "sensitivity_status",
         ]
     )
 
@@ -2526,6 +3130,10 @@ __all__ = [
     "CASH_FLOW_DCA",
     "CASH_FLOW_LUMP_SUM",
     "DEFAULT_AUDIT_SCENARIO_ID",
+    "DEFAULT_WALK_FORWARD_STEP_YEARS",
+    "DEFAULT_WALK_FORWARD_TEST_YEARS",
+    "DEFAULT_WALK_FORWARD_TOP_N",
+    "DEFAULT_WALK_FORWARD_TRAIN_YEARS",
     "LeveragedETFLabOutputs",
     "LeveragedETFLabReportResult",
     "ProductSpec",
@@ -2533,6 +3141,8 @@ __all__ = [
     "build_dca_optimizer",
     "build_extreme_scenario_audit",
     "build_leveraged_etf_lab_outputs",
+    "build_parameter_sensitivity",
+    "build_walk_forward_validation",
     "drawdown_guard_weights",
     "lab_config_for_scan_mode",
     "monthly_rebalance_dates",

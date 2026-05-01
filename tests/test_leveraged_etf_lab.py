@@ -12,6 +12,8 @@ from investment_backtest_lab.leveraged_etf_lab import (
     build_dca_optimizer,
     build_extreme_scenario_audit,
     build_leveraged_etf_lab_outputs,
+    build_parameter_sensitivity,
+    build_walk_forward_validation,
     drawdown_guard_weights,
     lab_config_for_scan_mode,
     monthly_rebalance_dates,
@@ -421,6 +423,136 @@ def test_dca_optimizer_uses_robust_score_and_penalizes_stress_failure():
     assert optimizer.iloc[-1]["risk_flag"] == "synthetic_stress_failed"
 
 
+def test_walk_forward_validation_splits_train_test_and_resets_dca_cash_flow():
+    prices = sample_long_prices()
+    config = LeveragedETFLabConfig(
+        grid_step=0.5,
+        top_n=4,
+        trend_windows=(50,),
+        drawdown_guards=(-0.10, -0.20),
+    )
+    outputs = build_leveraged_etf_lab_outputs(
+        actual_prices=prices,
+        synthetic_prices=pd.DataFrame(),
+        products=sample_products(),
+        lab_config=config,
+        scan_mode="fast",
+    )
+
+    walk_forward = build_walk_forward_validation(
+        metrics=outputs.metrics,
+        curves=outputs.curves,
+        lab_config=config,
+        top_n=2,
+        train_years=3,
+        test_years=1,
+        step_years=1,
+    )
+
+    assert not walk_forward.empty
+    train_end = pd.to_datetime(walk_forward["train_end"])
+    test_start = pd.to_datetime(walk_forward["test_start"])
+    test_end = pd.to_datetime(walk_forward["test_end"])
+    assert (train_end <= test_start).all()
+    assert (test_start < test_end).all()
+    assert walk_forward["test_total_contributed"].min() >= 22_000.0
+    expected_simple = (
+        walk_forward["test_ending_equity"] / walk_forward["test_total_contributed"] - 1.0
+    )
+    assert walk_forward["test_simple_cash_return"].to_numpy() == pytest.approx(
+        expected_simple.to_numpy()
+    )
+
+
+def test_dca_optimizer_validation_status_uses_walk_forward_results():
+    metrics = rank_metrics(
+        pd.DataFrame(
+            [
+                metric_row(
+                    "stable_dca",
+                    "ok",
+                    cash_flow_mode=CASH_FLOW_DCA,
+                    cagr=0.08,
+                    calmar=0.8,
+                    sortino=0.9,
+                    sharpe=0.8,
+                ),
+                metric_row(
+                    "fragile_dca",
+                    "ok",
+                    cash_flow_mode=CASH_FLOW_DCA,
+                    cagr=0.80,
+                    calmar=8.0,
+                    sortino=4.0,
+                    sharpe=2.0,
+                ),
+            ]
+        )
+    )
+    walk_forward = pd.DataFrame(
+        [
+            walk_row("stable_dca", 1, passed=True, test_xirr=0.08, test_drawdown=-0.20),
+            walk_row("stable_dca", 2, passed=True, test_xirr=0.07, test_drawdown=-0.30),
+            walk_row("fragile_dca", 1, passed=False, test_xirr=0.60, test_drawdown=-0.90),
+            walk_row("fragile_dca", 2, passed=False, test_xirr=0.70, test_drawdown=-0.95),
+        ]
+    )
+
+    optimizer = build_dca_optimizer(metrics, walk_forward=walk_forward)
+
+    assert optimizer.iloc[0]["scenario_id"] == "stable_dca"
+    assert optimizer.iloc[0]["validation_status"] == "stable"
+    assert optimizer.iloc[-1]["scenario_id"] == "fragile_dca"
+    assert optimizer.iloc[-1]["validation_status"] == "fragile"
+
+
+def test_parameter_sensitivity_summarizes_strategy_families():
+    metrics = rank_metrics(
+        pd.DataFrame(
+            [
+                metric_row(
+                    "a",
+                    "ok",
+                    cash_flow_mode=CASH_FLOW_DCA,
+                    cagr=0.08,
+                    calmar=0.8,
+                    sortino=0.9,
+                    sharpe=0.8,
+                ),
+                metric_row(
+                    "b",
+                    "ok",
+                    cash_flow_mode=CASH_FLOW_DCA,
+                    cagr=0.07,
+                    calmar=0.7,
+                    sortino=0.8,
+                    sharpe=0.7,
+                ),
+                metric_row(
+                    "c",
+                    "high_drawdown",
+                    cash_flow_mode=CASH_FLOW_DCA,
+                    cagr=0.50,
+                    calmar=2.0,
+                    sortino=1.0,
+                    sharpe=1.0,
+                ),
+            ]
+        )
+    )
+
+    sensitivity = build_parameter_sensitivity(metrics)
+
+    assert not sensitivity.empty
+    assert {
+        "median_xirr",
+        "worst_max_drawdown",
+        "risk_flag_ok_ratio",
+        "robust_score_iqr",
+        "sensitivity_status",
+    }.issubset(sensitivity.columns)
+
+
 def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     prices = sample_prices()
     products = sample_products()
@@ -452,8 +584,11 @@ def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     assert result.allocations_path.exists()
     assert result.extreme_audit_path.exists()
     assert result.dca_optimizer_path.exists()
+    assert result.walk_forward_path.exists()
+    assert result.sensitivity_path.exists()
     assert not result.extreme_audit.empty
     assert not result.dca_optimizer.empty
+    assert not result.sensitivity.empty
     html = result.html_path.read_text(encoding="utf-8")
     assert "Leveraged ETF Product Lab" in html
     assert "Actual ETF" in html
@@ -468,6 +603,9 @@ def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     assert "極端案例稽核" in html
     assert "DCA Optimizer v1" in html
     assert "DCA 最佳化探索" in html
+    assert "Robustness Validation" in html
+    assert "Walk-Forward Summary" in html
+    assert "Parameter Sensitivity" in html
     assert "不可作為穩健策略候選" in html
     assert "Lump Sum 一次投入" in html
     assert "Robust Ranking 穩健排名" in html
@@ -479,6 +617,8 @@ def test_leveraged_etf_lab_outputs_report_html_csv_and_payload(tmp_path):
     assert "extreme-audit-payload" in html
     assert "extreme audit CSV" in html
     assert "DCA optimizer CSV" in html
+    assert "walk-forward CSV" in html
+    assert "sensitivity CSV" in html
     assert "只做 2000/2008 類壓力測試" in html
     assert "瘛刻" not in html
     assert outputs.payload["metrics"]["total_equity"]["label"] == "淨資產"
@@ -543,6 +683,40 @@ def metric_row(
     }
 
 
+def walk_row(
+    scenario_id: str,
+    fold_index: int,
+    *,
+    passed: bool,
+    test_xirr: float,
+    test_drawdown: float,
+) -> dict[str, object]:
+    return {
+        "data_mode": "synthetic_stress",
+        "fold_index": fold_index,
+        "scenario_id": scenario_id,
+        "scenario_label": scenario_id,
+        "strategy_family": "test",
+        "train_start": "2010-01-01",
+        "train_end": "2015-01-01",
+        "test_start": "2015-01-01",
+        "test_end": "2017-01-01",
+        "train_rank": 1,
+        "train_robust_score": 1.0,
+        "train_xirr": 0.1,
+        "train_max_drawdown": -0.1,
+        "test_total_contributed": 34_000.0,
+        "test_ending_equity": 40_000.0,
+        "test_simple_cash_return": 40_000.0 / 34_000.0 - 1.0,
+        "test_xirr": test_xirr,
+        "test_max_drawdown": test_drawdown,
+        "test_recovery_days": 100,
+        "test_risk_flag": "ok" if passed else "high_drawdown",
+        "test_risk_failed": not passed,
+        "passed_fold": passed,
+    }
+
+
 def sample_prices() -> pd.DataFrame:
     dates = pd.date_range("2024-01-02", periods=80, freq="B")
     qqq = pd.Series(100.0, index=dates)
@@ -552,6 +726,22 @@ def sample_prices() -> pd.DataFrame:
             "QQQ": qqq,
             "QLD": qqq * 1.2,
             "TQQQ": qqq * 1.5,
+        },
+        index=dates,
+    )
+
+
+def sample_long_prices() -> pd.DataFrame:
+    dates = pd.date_range("2010-01-04", "2018-12-31", freq="B")
+    base = pd.Series(100.0, index=dates)
+    trend = pd.Series(range(len(dates)), index=dates) * 0.03
+    cycle = pd.Series([(-1) ** index * 0.15 for index in range(len(dates))], index=dates)
+    qqq = base + trend + cycle.cumsum() * 0.01
+    return pd.DataFrame(
+        {
+            "QQQ": qqq,
+            "QLD": qqq * 1.1,
+            "TQQQ": qqq * 1.2,
         },
         index=dates,
     )
