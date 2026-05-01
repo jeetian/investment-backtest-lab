@@ -302,6 +302,65 @@ class LeveragedETFLabConfig:
 
 
 @dataclass(frozen=True)
+class DCAPolicyOptimizerConfig:
+    enabled: bool = True
+    family: str = "qqq"
+    objective: str = "xirr"
+    max_drawdown_limit: float = -0.95
+    high_risk_drawdown_band: float = -0.85
+    target_leverage_grid: tuple[float, ...] = (0.0, 1.0, 1.5, 2.0, 2.5, 3.0)
+    trend_windows: tuple[int, ...] = (100, 150, 200, 250)
+    momentum_windows: tuple[int, ...] = (63, 126, 252)
+    volatility_windows: tuple[int, ...] = (63, 126)
+    volatility_targets: tuple[float, ...] = (0.18, 0.25, 0.35)
+    drawdown_guards: tuple[float, ...] = (-0.10, -0.20, -0.30, -0.50)
+    dca_initial_cash: float = 10_000.0
+    dca_contribution: float = 1_000.0
+    top_n: int = 24
+    fast_top_n: int = 12
+    walk_forward_top_n: int = 5
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> DCAPolicyOptimizerConfig:
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            family=str(data.get("family", "qqq")).lower(),
+            objective=str(data.get("objective", "xirr")).lower(),
+            max_drawdown_limit=float(data.get("max_drawdown_limit", -0.95)),
+            high_risk_drawdown_band=float(data.get("high_risk_drawdown_band", -0.85)),
+            target_leverage_grid=tuple(
+                float(value)
+                for value in data.get(
+                    "target_leverage_grid",
+                    [0.0, 1.0, 1.5, 2.0, 2.5, 3.0],
+                )
+            ),
+            trend_windows=tuple(
+                int(value) for value in data.get("trend_windows", [100, 150, 200, 250])
+            ),
+            momentum_windows=tuple(
+                int(value) for value in data.get("momentum_windows", [63, 126, 252])
+            ),
+            volatility_windows=tuple(
+                int(value) for value in data.get("volatility_windows", [63, 126])
+            ),
+            volatility_targets=tuple(
+                float(value) for value in data.get("volatility_targets", [0.18, 0.25, 0.35])
+            ),
+            drawdown_guards=tuple(
+                float(value)
+                for value in data.get("drawdown_guards", [-0.10, -0.20, -0.30, -0.50])
+            ),
+            dca_initial_cash=float(data.get("dca_initial_cash", 10_000.0)),
+            dca_contribution=float(data.get("dca_contribution", 1_000.0)),
+            top_n=int(data.get("top_n", 24)),
+            fast_top_n=int(data.get("fast_top_n", 12)),
+            walk_forward_top_n=int(data.get("walk_forward_top_n", 5)),
+        )
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     universe: list[AssetSpec]
     start_date: date
@@ -318,6 +377,9 @@ class BacktestConfig:
     leverage: LeverageConfig = field(default_factory=LeverageConfig)
     dynamic_leverage: DynamicLeverageConfig = field(default_factory=DynamicLeverageConfig)
     leveraged_etf_lab: LeveragedETFLabConfig = field(default_factory=LeveragedETFLabConfig)
+    dca_policy_optimizer: DCAPolicyOptimizerConfig = field(
+        default_factory=DCAPolicyOptimizerConfig
+    )
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BacktestConfig:
@@ -337,6 +399,9 @@ class BacktestConfig:
             leverage=LeverageConfig.from_dict(data.get("leverage")),
             dynamic_leverage=DynamicLeverageConfig.from_dict(data.get("dynamic_leverage")),
             leveraged_etf_lab=LeveragedETFLabConfig.from_dict(data.get("leveraged_etf_lab")),
+            dca_policy_optimizer=DCAPolicyOptimizerConfig.from_dict(
+                data.get("dca_policy_optimizer")
+            ),
         )
 
 

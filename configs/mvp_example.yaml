@@ -121,6 +121,24 @@ leveraged_etf_lab:
       leverage: 3.0
       label: TQQQ 3x
 
+dca_policy_optimizer:
+  enabled: true
+  family: qqq
+  objective: xirr
+  max_drawdown_limit: -0.95
+  high_risk_drawdown_band: -0.85
+  target_leverage_grid: [0.0, 1.0, 1.5, 2.0, 2.5, 3.0]
+  trend_windows: [100, 150, 200, 250]
+  momentum_windows: [63, 126, 252]
+  volatility_windows: [63, 126]
+  volatility_targets: [0.18, 0.25, 0.35]
+  drawdown_guards: [-0.10, -0.20, -0.30, -0.50]
+  dca_initial_cash: 10000
+  dca_contribution: 1000
+  top_n: 24
+  fast_top_n: 12
+  walk_forward_top_n: 5
+
 cost_model:
   tw:
     commission_rate: 0.001425
