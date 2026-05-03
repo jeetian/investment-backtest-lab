@@ -4,20 +4,36 @@
 
 ## 每月流程
 
-1. 更新依賴與資料。
+1. 更新依賴與研究資料。
 
 ```powershell
 uv sync --extra dev
 uv run python scripts\analyze_dca_policy_optimizer.py --config configs\mvp_example.yaml --family qqq --scan-mode fast --cohort-validation
+uv run python scripts\analyze_monthly_decision_pack.py --config configs\mvp_example.yaml --family qqq
 ```
 
-2. 打開報表。
+2. 先打開月度決策入口。
+
+```text
+reports/monthly_decision_pack_qqq.html
+```
+
+這頁只回答四件事：
+
+- 本月研究配置是什麼。
+- 是否需要人工 review。
+- 為什麼需要或不需要 review。
+- 上期與本期配置是否改變。
+
+3. 再打開研究後台。
 
 ```text
 reports/dca_policy_optimizer_qqq.html
 ```
 
-3. 先看 `Monthly Allocation Signal`。
+這頁用來查 optimizer 細節，不是第一入口。先看 `研究摘要`，再看 `Eligible Candidates` 與 `Rejected / Watchlist`。
+
+4. 在月度決策入口先看 `本月結論`。
 
 重點欄位：
 
@@ -32,8 +48,10 @@ reports/dca_policy_optimizer_qqq.html
 - `CASH_weight`
 - `next_rebalance_date`
 - `next_monitor_date`
+- `manual_review_required`
+- `review_reasons`
 
-4. 再看 `Best Candidates`。
+5. 在 optimizer 後台看 `Eligible Candidates`。
 
 確認策略是否通過：
 
@@ -42,11 +60,15 @@ reports/dca_policy_optimizer_qqq.html
 - synthetic stress。
 - cross-mode drawdown filter。
 
-5. 最後看 CSV。
+`Rejected / Watchlist` 不是刪除策略，而是把高 XIRR 但風險或穩健性不足的策略放在研究觀察區。
+
+6. 最後看 CSV。
 
 - `reports/dca_policy_optimizer_qqq_policy.csv`
 - `reports/dca_policy_optimizer_qqq_allocation_signal.csv`
 - `reports/dca_policy_optimizer_qqq_cohort_summary.csv`
+- `reports/monthly_decision_pack_qqq.csv`
+- `reports/monthly_decision_pack_qqq_signal_history.csv`
 
 ## 週度監控
 

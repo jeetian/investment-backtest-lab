@@ -112,8 +112,11 @@ def test_monthly_decision_pack_writes_html_csv_and_history(tmp_path):
     assert result.history_path.exists()
     html = result.html_path.read_text(encoding="utf-8")
     assert "Monthly Decision Pack" in html
-    assert "目前研究配置" in html
+    assert "本月結論" in html
+    assert "配置比例" in html
+    assert "為什麼需要 review" in html
     assert "上期 vs 本期" in html
+    assert "我該怎麼讀" in html
     assert "Decision Checklist" in html
     assert "研究訊號，不是投資建議" in html
     assert "manual_review_required" in html

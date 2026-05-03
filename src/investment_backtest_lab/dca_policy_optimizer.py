@@ -1054,11 +1054,14 @@ def render_dca_policy_optimizer_html(
     config_path: Path,
     scan_mode: str,
 ) -> str:
-    actual = metrics[metrics["data_mode"] == DATA_MODE_ACTUAL].head(12)
-    synthetic = metrics[metrics["data_mode"] == DATA_MODE_SYNTHETIC].head(12)
-    best = metrics[metrics["eligible_for_candidate"].astype(bool)].head(8)
-    if best.empty:
-        best = metrics[~metrics["risk_failed"].astype(bool)].head(8)
+    actual_all = metrics[metrics["data_mode"] == DATA_MODE_ACTUAL]
+    synthetic_all = metrics[metrics["data_mode"] == DATA_MODE_SYNTHETIC]
+    actual = actual_all.head(12)
+    synthetic = synthetic_all.head(12)
+    eligible = metrics[metrics["eligible_for_candidate"].astype(bool)].head(10)
+    if eligible.empty:
+        eligible = metrics[~metrics["risk_failed"].astype(bool)].head(10)
+    rejected = metrics[~metrics["eligible_for_candidate"].astype(bool)].head(12)
     cohort_preview = cohort_summary.sort_values(
         ["data_mode", "drawdown_breach_rate", "median_rank"],
         ascending=[True, True, True],
@@ -1129,13 +1132,13 @@ def render_dca_policy_optimizer_html(
       border-radius: 6px;
       color: #47372e;
     }}
-    .signal-guide {{
+    .signal-guide, .cards {{
       display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
       margin: 14px 0;
     }}
-    .signal-card {{
+    .signal-card, .card {{
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 14px;
@@ -1223,15 +1226,14 @@ def render_dca_policy_optimizer_html(
   <section class="hero">
     <div class="panel">
       <p class="eyebrow">DCA Policy Optimizer</p>
-      <h1>QQQ 槓桿 DCA 策略搜尋</h1>
+      <h1>研究摘要</h1>
       <p>
-        這頁用 QQQ/QLD/TQQQ/CASH 產生可解釋的槓桿 policy，
-        尋找在最大回撤不低於 -95% 條件下，DCA XIRR 較高且 walk-forward
-        較穩健的候選策略。
+        這頁是策略研究後台：用 QQQ/QLD/TQQQ/CASH 產生可解釋的 DCA policy，
+        檢查 Actual ETF、Synthetic Stress、walk-forward 與 rolling cohort 後，再挑出可候選策略。
       </p>
       <div class="note">
-        這是研究訊號，不是投資建議。Synthetic stress 是壓力測試，
-        不代表實際 TQQQ 歷史。
+        這是研究訊號，不是投資建議。這頁刻意不只看最高 XIRR，因為高報酬若伴隨接近歸零的回撤，
+        不應該直接成為每月配置候選。
       </div>
     </div>
     <div class="panel">
@@ -1245,6 +1247,14 @@ def render_dca_policy_optimizer_html(
     </div>
   </section>
 
+  {_render_research_summary(
+      allocation_signal=allocation_signal,
+      actual=actual_all,
+      eligible=eligible,
+      scan_mode=scan_mode,
+      config_path=config_path,
+  )}
+
   <section class="panel">
     <h2>Monthly Allocation Signal</h2>
     <p>
@@ -1257,9 +1267,21 @@ def render_dca_policy_optimizer_html(
   </section>
 
   <section class="panel">
-    <h2>Best Candidates</h2>
-    <p>只把通過 hard drawdown 與 walk-forward 的策略列為候選；高風險策略仍可在完整排名中查看。</p>
-    <div class="table-wrap">{_render_table(best, _metric_columns())}</div>
+    <h2>Eligible Candidates</h2>
+    <p>
+      只把通過 hard drawdown、walk-forward 與 cohort 檢查的策略列為候選；
+      這裡才是月度訊號會優先參考的清單。
+    </p>
+    <div class="table-wrap">{_render_table(eligible, _metric_columns())}</div>
+  </section>
+
+  <section class="panel">
+    <h2>Rejected / Watchlist</h2>
+    <p>
+      這些策略可能報酬很高，但可能被 synthetic stress、最大回撤或穩健性驗證擋下。
+      保留在這裡是為了研究，不是為了直接採用。
+    </p>
+    <div class="table-wrap">{_render_table(rejected, _metric_columns())}</div>
   </section>
 
   <section class="panel">
@@ -1282,6 +1304,7 @@ def render_dca_policy_optimizer_html(
   <section class="panel">
     <h2>Cohort Robustness</h2>
     <p>每月第一個交易日作為 DCA 起點，檢查不同起點與不同持有期間下的排名是否穩定。</p>
+    {_render_cohort_field_explainer()}
     <div class="table-wrap">{_render_table(cohort_preview, _cohort_summary_columns())}</div>
   </section>
 
@@ -1862,6 +1885,93 @@ def _leverage_slug(value: float) -> str:
 def _json_series(values: Any) -> list[float | None]:
     series = pd.Series(values)
     return [None if pd.isna(value) else float(value) for value in series]
+
+
+def _render_research_summary(
+    *,
+    allocation_signal: pd.DataFrame,
+    actual: pd.DataFrame,
+    eligible: pd.DataFrame,
+    scan_mode: str,
+    config_path: Path,
+) -> str:
+    top_actual = actual.iloc[0] if not actual.empty else None
+    best_eligible = eligible.iloc[0] if not eligible.empty else None
+    signal = allocation_signal.iloc[0] if not allocation_signal.empty else None
+    candidate_label = (
+        str(best_eligible.get("scenario_label", "")) if best_eligible is not None else "無候選"
+    )
+    signal_regime = str(signal.get("regime", "")) if signal is not None else "無訊號"
+    signal_summary = str(signal.get("allocation_summary", "")) if signal is not None else ""
+    return f"""
+    <section class="panel">
+      <h2>研究摘要</h2>
+      <div class="cards">
+        <div class="card">
+          <span>目前採用候選</span>
+          <strong>{escape(candidate_label)}</strong>
+          <p>{_why_not_highest_xirr(top_actual, best_eligible)}</p>
+        </div>
+        <div class="card">
+          <span>月度訊號</span>
+          <strong>{escape(signal_regime)}</strong>
+          <p>{escape(signal_summary)}</p>
+        </div>
+        <div class="card">
+          <span>驗證口徑</span>
+          <strong>Actual + Stress</strong>
+          <p>先分開看真實 ETF 歷史與 synthetic stress，再看 walk-forward / cohort。</p>
+        </div>
+        <div class="card">
+          <span>執行模式</span>
+          <strong>{escape(scan_mode)}</strong>
+          <p>config: {escape(str(config_path))}</p>
+        </div>
+      </div>
+    </section>
+    """
+
+
+def _why_not_highest_xirr(
+    top_actual: pd.Series | None,
+    best_eligible: pd.Series | None,
+) -> str:
+    if top_actual is None or best_eligible is None:
+        return "目前資料不足，無法比較最高 XIRR 與候選策略。"
+    if str(top_actual.get("scenario_id")) == str(best_eligible.get("scenario_id")):
+        return "目前候選同時也是 Actual ETF 排名靠前的策略，但仍需看 synthetic stress 與 cohort。"
+    return (
+        "沒有直接採用 Actual ETF 最高 XIRR，因為候選策略還要通過最大回撤、"
+        "walk-forward、cohort 與 synthetic stress 風險檢查。"
+    )
+
+
+def _render_cohort_field_explainer() -> str:
+    return """
+    <h3>欄位解釋</h3>
+    <div class="cards">
+      <div class="card">
+        <span>Median XIRR</span>
+        <strong>典型起點報酬</strong>
+        <p>所有 cohort 的中位數 XIRR，用來避免只看單一起點。</p>
+      </div>
+      <div class="card">
+        <span>Worst XIRR</span>
+        <strong>最差起點</strong>
+        <p>檢查如果剛好從不利月份開始，策略是否仍可接受。</p>
+      </div>
+      <div class="card">
+        <span>Top-3 Hit Rate</span>
+        <strong>排名穩定度</strong>
+        <p>在多少比例的 cohort 中進入前三名，越高代表排名越不靠運氣。</p>
+      </div>
+      <div class="card">
+        <span>Breach Rate</span>
+        <strong>破線比例</strong>
+        <p>多少 cohort 跌破 -95% 最大回撤硬線，這是重要淘汰訊號。</p>
+      </div>
+    </div>
+    """
 
 
 def _render_allocation_explainer(allocation_signal: pd.DataFrame) -> str:

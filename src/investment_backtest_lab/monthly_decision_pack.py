@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from investment_backtest_lab.html_ui import render_html_head, risk_badge
 from investment_backtest_lab.models import MonthlyDecisionPackConfig
 
 WEIGHT_COLUMNS = ["QQQ_weight", "QLD_weight", "TQQQ_weight", "CASH_weight"]
@@ -178,140 +179,16 @@ def render_monthly_decision_pack_html(
     review_class = "danger" if review else "ok"
     return f"""<!doctype html>
 <html lang="zh-Hant">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Monthly Decision Pack</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link
-    href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap"
-    rel="stylesheet">
-  <style>
-    :root {{
-      --paper: #f7f5ef;
-      --surface: #fffffc;
-      --ink: #232520;
-      --muted: #677069;
-      --line: #d9d6cb;
-      --indigo: #526a83;
-      --sage: #6d856f;
-      --copper: #b8794f;
-      --danger: #9b4b45;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      background: var(--paper);
-      color: var(--ink);
-      font-family: "Noto Sans TC", "Noto Sans JP", system-ui, sans-serif;
-      line-height: 1.55;
-    }}
-    main {{ max-width: 1280px; margin: 0 auto; padding: 28px; }}
-    h1, h2, h3 {{ margin: 0; letter-spacing: 0; }}
-    h1 {{ font-size: 30px; }}
-    h2 {{ font-size: 21px; margin-bottom: 12px; }}
-    h3 {{ font-size: 16px; }}
-    .panel {{
-      background: var(--surface);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 18px;
-      box-shadow: 0 10px 22px rgba(47, 47, 43, 0.04);
-      margin-bottom: 16px;
-    }}
-    .hero {{
-      display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
-      gap: 16px;
-      align-items: stretch;
-    }}
-    .eyebrow {{
-      text-transform: uppercase;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-      margin-bottom: 6px;
-    }}
-    .kpis {{
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 14px;
-    }}
-    .kpi {{
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 12px;
-      background: #fbfaf6;
-    }}
-    .kpi span {{ display: block; color: var(--muted); font-size: 12px; }}
-    .kpi strong {{ display: block; margin-top: 4px; font-size: 18px; }}
-    .pill {{
-      display: inline-block;
-      border-radius: 999px;
-      padding: 5px 10px;
-      margin-top: 10px;
-      font-weight: 700;
-      font-size: 13px;
-      border: 1px solid var(--line);
-    }}
-    .pill.ok {{ color: var(--sage); background: #f3f8f1; }}
-    .pill.danger {{ color: var(--danger); background: #fff5f2; border-color: #d9b89c; }}
-    .weights {{
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
-      margin-top: 14px;
-    }}
-    .weight {{
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 14px;
-      background: #fbfaf6;
-    }}
-    .weight strong {{ font-size: 24px; }}
-    .note {{
-      border-left: 4px solid var(--copper);
-      background: #fff8f3;
-      padding: 12px 14px;
-      border-radius: 6px;
-      color: #47372e;
-    }}
-    .checklist {{
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 10px;
-    }}
-    .check {{
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 12px;
-      background: #fbfaf6;
-    }}
-    .check strong {{ display: block; }}
-    .check.ok strong {{ color: var(--sage); }}
-    .check.warn strong {{ color: var(--danger); }}
-    .table-wrap {{ overflow-x: auto; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th, td {{ padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }}
-    th {{ color: var(--muted); font-weight: 700; background: #fbfaf6; }}
-    a {{ color: var(--indigo); font-weight: 700; text-decoration: none; margin-right: 14px; }}
-    @media (max-width: 900px) {{
-      main {{ padding: 16px; }}
-      .hero, .kpis, .weights, .checklist {{ grid-template-columns: 1fr; }}
-    }}
-  </style>
-</head>
+{render_html_head(title="Monthly Decision Pack")}
 <body>
 <main>
   <section class="hero">
     <div class="panel">
       <p class="eyebrow">Monthly Decision Pack</p>
-      <h1>QQQ Family 月度配置決策包</h1>
-      <p>
-        這頁把 DCA Policy Optimizer 的最新研究訊號整理成每月人工決策入口。
-        主口徑為 USD；這是研究訊號，不是投資建議，也不會自動下單。
+      <h1>本月結論</h1>
+      <p class="lede">
+        QQQ Family 目前研究訊號整理成每月人工決策入口。主口徑為 USD；
+        這是研究訊號，不是投資建議，也不會自動下單。
       </p>
       <span class="pill {review_class}">{review_label}</span>
       <p><strong>manual_review_required:</strong> {escape(str(review))}</p>
@@ -337,12 +214,14 @@ def render_monthly_decision_pack_html(
       <p><strong>Regime:</strong> {escape(str(row["regime"]))}</p>
       <p><strong>Reason:</strong> {escape(str(row["reason"]))}</p>
       <p><strong>Change:</strong> {escape(str(row["weight_change_summary"]))}</p>
+      <p><strong>Review reasons:</strong> {escape(str(row["review_reasons"]) or "無")}</p>
     </div>
   </section>
 
   <section class="panel">
-    <h2>目前研究配置</h2>
-    <div class="weights">
+    <h2>配置比例</h2>
+    {_render_allocation_bar(row)}
+    <div class="cards">
       {_render_weight_card("QQQ", row["QQQ_weight"])}
       {_render_weight_card("QLD", row["QLD_weight"])}
       {_render_weight_card("TQQQ", row["TQQQ_weight"])}
@@ -353,6 +232,11 @@ def render_monthly_decision_pack_html(
   <section class="panel">
     <h2>上期 vs 本期</h2>
     {_render_previous_summary(row)}
+  </section>
+
+  <section class="panel">
+    <h2>為什麼需要 review</h2>
+    {_render_review_drilldown(row)}
   </section>
 
   <section class="panel">
@@ -368,6 +252,21 @@ def render_monthly_decision_pack_html(
     </div>
     <div class="note">
       <strong>Review reasons:</strong> {escape(str(row["review_reasons"]) or "無")}
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>我該怎麼讀</h2>
+    <div class="steps">
+      <div class="step"><b>1. 先看本月結論</b><br>確認配置、槓桿和 manual review 狀態。</div>
+      <div class="step">
+        <b>2. 再看風險原因</b><br>
+        synthetic stress、cohort、walk-forward 任一亮燈都要人工檢查。
+      </div>
+      <div class="step">
+        <b>3. 最後看歷史變化</b><br>
+        確認本期和上期是否真的改變，不要因重跑同一天資料而誤判。
+      </div>
     </div>
   </section>
 
@@ -627,6 +526,67 @@ def _render_weight_card(label: str, value: Any) -> str:
       <strong>{_format_percent(value)}</strong>
     </div>
     """
+
+
+def _render_allocation_bar(row: pd.Series) -> str:
+    segments = []
+    for ticker, css_class, column in [
+        ("QQQ", "qqq", "QQQ_weight"),
+        ("QLD", "qld", "QLD_weight"),
+        ("TQQQ", "tqqq", "TQQQ_weight"),
+        ("CASH", "cash", "CASH_weight"),
+    ]:
+        weight = max(_safe_float(row.get(column), default=0.0), 0.0)
+        label = f"{ticker} {_format_percent(weight)}" if weight >= 0.08 else ""
+        segments.append(
+            f'<div class="allocation-segment {css_class}" '
+            f'style="width:{weight * 100:.4f}%">{escape(label)}</div>'
+        )
+    return f'<div class="allocation-bar">{"".join(segments)}</div>'
+
+
+def _render_review_drilldown(row: pd.Series) -> str:
+    synthetic_badge = risk_badge(
+        _short_check_label(row["synthetic_stress_ok"]),
+        bool(row["synthetic_stress_ok"]),
+    )
+    cohort_badge = risk_badge(_short_check_label(row["cohort_ok"]), bool(row["cohort_ok"]))
+    walk_badge = risk_badge(
+        _short_check_label(row["walk_forward_ok"]),
+        bool(row["walk_forward_ok"]),
+    )
+    drawdown_badge = risk_badge(
+        _short_check_label(row["drawdown_limit_ok"]),
+        bool(row["drawdown_limit_ok"]),
+    )
+    return f"""
+    <div class="cards">
+      <div class="card">
+        <span>Synthetic Stress</span>
+        <strong>{synthetic_badge}</strong>
+        <p>{escape(str(row["synthetic_note"]))}</p>
+      </div>
+      <div class="card">
+        <span>Cohort Robustness</span>
+        <strong>{cohort_badge}</strong>
+        <p>{escape(str(row["cohort_note"]))}</p>
+      </div>
+      <div class="card">
+        <span>Walk-forward</span>
+        <strong>{walk_badge}</strong>
+        <p>{escape(str(row["walk_forward_note"]))}</p>
+      </div>
+      <div class="card">
+        <span>Drawdown hard line</span>
+        <strong>{drawdown_badge}</strong>
+        <p>{escape(str(row["drawdown_note"]))}</p>
+      </div>
+    </div>
+    """
+
+
+def _short_check_label(passed: Any) -> str:
+    return "OK" if bool(passed) else "Review"
 
 
 def _render_previous_summary(row: pd.Series) -> str:

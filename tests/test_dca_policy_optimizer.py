@@ -336,7 +336,10 @@ def test_dca_policy_optimizer_report_writes_html_and_csv(tmp_path):
     assert "訊號解讀" in html
     assert "為什麼是這個配置" in html
     assert "正式調整日" in html
-    assert "Best Candidates" in html
+    assert "研究摘要" in html
+    assert "Eligible Candidates" in html
+    assert "Rejected / Watchlist" in html
+    assert "欄位解釋" in html
     assert "Cohort Robustness" in html
     assert "Compare Lab" in html
     assert "不是投資建議" in html
