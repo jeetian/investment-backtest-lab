@@ -856,7 +856,51 @@ def build_allocation_signal(
         + signal.get("TQQQ_weight", 0.0).astype(float)
         + signal.get("CASH_weight", 0.0).astype(float)
     )
+    signal["allocation_summary"] = signal.apply(_allocation_summary, axis=1)
+    signal["validation_note"] = signal.apply(_allocation_validation_note, axis=1)
+    signal["risk_note"] = signal.apply(_allocation_risk_note, axis=1)
+    signal["cadence_note"] = signal.apply(_allocation_cadence_note, axis=1)
     return signal
+
+
+def _allocation_summary(row: pd.Series) -> str:
+    return (
+        f"{float(row.get('target_effective_leverage', 0.0)):.2f}x target: "
+        f"QQQ {_format_percent(row.get('QQQ_weight', 0.0))}, "
+        f"QLD {_format_percent(row.get('QLD_weight', 0.0))}, "
+        f"TQQQ {_format_percent(row.get('TQQQ_weight', 0.0))}, "
+        f"CASH {_format_percent(row.get('CASH_weight', 0.0))}"
+    )
+
+
+def _allocation_validation_note(row: pd.Series) -> str:
+    return (
+        f"Rank {int(row.get('rank', 0))}; "
+        f"validation={row.get('validation_status', '')}; "
+        f"XIRR {_format_percent(row.get('xirr'))}; "
+        f"max drawdown {_format_percent(row.get('max_drawdown'))}."
+    )
+
+
+def _allocation_risk_note(row: pd.Series) -> str:
+    target_leverage = float(row.get("target_effective_leverage", 0.0))
+    max_drawdown = float(row.get("max_drawdown", 0.0))
+    review_now = bool(row.get("review_now", False))
+    if review_now:
+        return "週度監控旗標為 true：目前 regime 偏防守，月度調整前仍需人工檢查。"
+    if max_drawdown <= -0.85:
+        return "歷史最大回撤已進入高風險帶，不能只看 XIRR 或期末資產。"
+    if target_leverage >= 2.5:
+        return "目前訊號屬高槓桿曝險，請同時檢查 synthetic stress 與 cohort robustness。"
+    return "目前未觸發週度風險監控旗標，仍需依月度節奏人工確認。"
+
+
+def _allocation_cadence_note(row: pd.Series) -> str:
+    return (
+        f"正式調整日：{row.get('next_rebalance_date', '')}; "
+        f"下一次週度監控：{row.get('next_monitor_date', '')}; "
+        "週度監控只提示 review，不自動調倉。"
+    )
 
 
 def build_policy_compare_payload(
@@ -1085,6 +1129,37 @@ def render_dca_policy_optimizer_html(
       border-radius: 6px;
       color: #47372e;
     }}
+    .signal-guide {{
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 12px;
+      margin: 14px 0;
+    }}
+    .signal-card {{
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfaf6;
+    }}
+    .signal-card p {{ margin: 6px 0 0; color: var(--muted); }}
+    .signal-card strong {{ font-size: 18px; }}
+    .signal-list {{
+      margin: 10px 0 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }}
+    .badge {{
+      display: inline-block;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 8px;
+      margin: 4px 6px 0 0;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }}
+    .badge.warn {{ border-color: #d9b89c; color: var(--danger); background: #fff8f3; }}
     .kpis {{
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1139,7 +1214,7 @@ def render_dca_policy_optimizer_html(
     #compare-chart {{ width: 100%; height: 520px; }}
     @media (max-width: 900px) {{
       main {{ padding: 16px; }}
-      .hero, .compare-grid, .kpis {{ grid-template-columns: 1fr; }}
+      .hero, .compare-grid, .kpis, .signal-guide {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -1176,6 +1251,7 @@ def render_dca_policy_optimizer_html(
       用通過驗證的 Actual ETF 候選策略，顯示最新研究配置。
       正式節奏為每月調整，週度只做風險監控。
     </p>
+    {_render_allocation_explainer(allocation_signal)}
     {_render_signal_kpis(allocation_signal)}
     <div class="table-wrap">{_render_table(allocation_signal.head(12), _signal_columns())}</div>
   </section>
@@ -1788,6 +1864,44 @@ def _json_series(values: Any) -> list[float | None]:
     return [None if pd.isna(value) else float(value) for value in series]
 
 
+def _render_allocation_explainer(allocation_signal: pd.DataFrame) -> str:
+    if allocation_signal.empty:
+        return ""
+    row = allocation_signal.iloc[0]
+    review_class = " warn" if bool(row.get("review_now", False)) else ""
+    return f"""
+    <div class="signal-guide">
+      <div class="signal-card">
+        <h3>訊號解讀</h3>
+        <p class="eyebrow">Monthly Allocation Signal</p>
+        <strong>{escape(str(row.get("scenario_label", "")))}</strong>
+        <p>{escape(str(row.get("allocation_summary", "")))}</p>
+        <span class="badge">regime: {escape(str(row.get("regime", "")))}</span>
+        <span class="badge">reason: {escape(str(row.get("reason", "")))}</span>
+        <span class="badge{review_class}">
+          review_now: {escape(str(row.get("review_now", "")))}
+        </span>
+      </div>
+      <div class="signal-card">
+        <h3>為什麼是這個配置</h3>
+        <ul class="signal-list">
+          <li>
+            候選來源優先使用 Actual ETF，且必須通過 drawdown、walk-forward、
+            cohort 與 cross-mode filter。
+          </li>
+          <li>{escape(str(row.get("validation_note", "")))}</li>
+          <li>{escape(str(row.get("risk_note", "")))}</li>
+          <li>{escape(str(row.get("cadence_note", "")))}</li>
+        </ul>
+      </div>
+    </div>
+    <div class="note">
+      這是月度配置研究訊號，不是自動交易指令。若訊號顯示高槓桿或 review_now=true，
+      請回到 Synthetic Stress、Walk-Forward 與 Cohort Robustness 檢查再做人工判斷。
+    </div>
+    """
+
+
 def _render_signal_kpis(current_signal: pd.DataFrame) -> str:
     if current_signal.empty:
         return ""
@@ -1909,6 +2023,8 @@ def _signal_columns() -> list[tuple[str, str]]:
         ("CASH_weight", "CASH"),
         ("xirr", "XIRR"),
         ("max_drawdown", "Max DD"),
+        ("allocation_summary", "Allocation Summary"),
+        ("risk_note", "Risk Note"),
     ]
 
 

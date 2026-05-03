@@ -281,6 +281,11 @@ def test_allocation_signal_contains_next_dates_and_weight_sum():
     assert signal.iloc[0]["next_monitor_date"]
     assert signal["weight_sum"].iloc[0] == pytest.approx(1.0)
     assert signal["target_effective_leverage"].max() <= 3.0
+    assert "allocation_summary" in signal.columns
+    assert "validation_note" in signal.columns
+    assert "risk_note" in signal.columns
+    assert "cadence_note" in signal.columns
+    assert "QQQ" in str(signal.iloc[0]["allocation_summary"])
 
 
 def test_next_monthly_trading_date_skips_remaining_same_month_days():
@@ -328,6 +333,9 @@ def test_dca_policy_optimizer_report_writes_html_and_csv(tmp_path):
     html = result.html_path.read_text(encoding="utf-8")
     assert "DCA Policy Optimizer" in html
     assert "Monthly Allocation Signal" in html
+    assert "訊號解讀" in html
+    assert "為什麼是這個配置" in html
+    assert "正式調整日" in html
     assert "Best Candidates" in html
     assert "Cohort Robustness" in html
     assert "Compare Lab" in html
