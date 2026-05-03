@@ -144,6 +144,15 @@ dca_policy_optimizer:
   monitor_cadence: weekly
   optuna_enabled: false
 
+monthly_decision_pack:
+  enabled: true
+  family: qqq
+  require_optimizer_outputs: true
+  max_drawdown_limit: -0.95
+  high_risk_drawdown_band: -0.85
+  rebalance_cadence: monthly
+  monitor_cadence: weekly
+
 cost_model:
   tw:
     commission_rate: 0.001425

@@ -373,6 +373,30 @@ class DCAPolicyOptimizerConfig:
 
 
 @dataclass(frozen=True)
+class MonthlyDecisionPackConfig:
+    enabled: bool = True
+    family: str = "qqq"
+    require_optimizer_outputs: bool = True
+    max_drawdown_limit: float = -0.95
+    high_risk_drawdown_band: float = -0.85
+    rebalance_cadence: str = "monthly"
+    monitor_cadence: str = "weekly"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> MonthlyDecisionPackConfig:
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            family=str(data.get("family", "qqq")).lower(),
+            require_optimizer_outputs=bool(data.get("require_optimizer_outputs", True)),
+            max_drawdown_limit=float(data.get("max_drawdown_limit", -0.95)),
+            high_risk_drawdown_band=float(data.get("high_risk_drawdown_band", -0.85)),
+            rebalance_cadence=str(data.get("rebalance_cadence", "monthly")).lower(),
+            monitor_cadence=str(data.get("monitor_cadence", "weekly")).lower(),
+        )
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     universe: list[AssetSpec]
     start_date: date
@@ -391,6 +415,9 @@ class BacktestConfig:
     leveraged_etf_lab: LeveragedETFLabConfig = field(default_factory=LeveragedETFLabConfig)
     dca_policy_optimizer: DCAPolicyOptimizerConfig = field(
         default_factory=DCAPolicyOptimizerConfig
+    )
+    monthly_decision_pack: MonthlyDecisionPackConfig = field(
+        default_factory=MonthlyDecisionPackConfig
     )
 
     @classmethod
@@ -413,6 +440,9 @@ class BacktestConfig:
             leveraged_etf_lab=LeveragedETFLabConfig.from_dict(data.get("leveraged_etf_lab")),
             dca_policy_optimizer=DCAPolicyOptimizerConfig.from_dict(
                 data.get("dca_policy_optimizer")
+            ),
+            monthly_decision_pack=MonthlyDecisionPackConfig.from_dict(
+                data.get("monthly_decision_pack")
             ),
         )
 
