@@ -78,17 +78,19 @@ uv run python scripts\analyze_dca_policy_optimizer.py --config configs\mvp_examp
 - `reports/dca_policy_optimizer_qqq_cohorts.csv`
 - `reports/dca_policy_optimizer_qqq_cohort_summary.csv`
 - `reports/dca_policy_optimizer_qqq_allocation_signal.csv`
+- `reports/dca_policy_optimizer_qqq_signal_explainability.csv`
 
 這份報表是研究後台，用來理解候選策略怎麼被挑出來。閱讀順序：
 
 1. `研究摘要`：看目前採用候選、為什麼不是只選最高 XIRR。
 2. `Monthly Allocation Signal`：看目前研究配置、regime、reason、下一次月度調整日。
-3. `Eligible Candidates`：看通過驗證的候選策略。
-4. `Rejected / Watchlist`：看報酬高但風險或穩健性不足的策略。
-5. `Actual ETF Ranking`：看真實 QQQ/QLD/TQQQ 歷史。
-6. `Synthetic Stress Ranking`：看 2000/2008 類壓力測試。
-7. `Cohort Robustness`：看不同起點與持有期間下是否穩定。
-8. `Compare Lab`：自由勾選策略疊圖。
+3. `signal_explainability CSV`：查最新指標、觸發條件與 policy 理由。
+4. `Eligible Candidates`：看通過驗證的候選策略。
+5. `Rejected / Watchlist`：看報酬高但風險或穩健性不足的策略。
+6. `Actual ETF Ranking`：看真實 QQQ/QLD/TQQQ 歷史。
+7. `Synthetic Stress Ranking`：看 2000/2008 類壓力測試。
+8. `Cohort Robustness`：看不同起點與持有期間下是否穩定。
+9. `Compare Lab`：自由勾選策略疊圖。
 
 ## 6. Monthly Decision Pack
 
@@ -105,10 +107,11 @@ uv run python scripts\analyze_monthly_decision_pack.py --config configs\mvp_exam
 這份報表是每月第一入口，比 optimizer 後台更適合一般閱讀。閱讀順序：
 
 1. `本月結論`：看目前配置、目標槓桿、下次調整日、是否需要人工 review。
-2. `配置比例`：用長條圖看 QQQ/QLD/TQQQ/CASH 權重。
-3. `為什麼需要 review`：看 synthetic stress、cohort、walk-forward、drawdown hard line 的實際數字。
-4. `上期 vs 本期`：看權重、槓桿、regime 是否改變。
-5. `Decision Checklist`：確認哪個風險檢查沒有通過。
+2. `本月訊號解釋`：看 QQQ 價格、均線、動能、波動、回撤與下一個加減槓桿觸發條件。
+3. `配置比例`：用長條圖看 QQQ/QLD/TQQQ/CASH 權重。
+4. `為什麼需要 review`：看 synthetic stress、cohort、walk-forward、drawdown hard line 的實際數字。
+5. `上期 vs 本期`：看權重、槓桿、regime 是否改變。
+6. `Decision Checklist`：確認哪個風險檢查沒有通過。
 
 建議日常順序是先看 `monthly_decision_pack_qqq.html`，需要查原因時再回到 `dca_policy_optimizer_qqq.html`。
 

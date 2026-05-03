@@ -107,6 +107,7 @@ def main() -> None:
     print(f"Cohorts CSV:     {result.cohorts_path}")
     print(f"Cohort summary:  {result.cohort_summary_path}")
     print(f"Allocation:      {result.allocation_signal_path}")
+    print(f"Explainability:  {result.signal_explainability_path}")
     print(f"Payload JSON:    {result.payload_path}")
 
 

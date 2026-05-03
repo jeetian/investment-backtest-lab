@@ -90,6 +90,7 @@ def test_policy_optimizer_outputs_dca_metrics_and_allocation_signal():
     assert not outputs.metrics.empty
     assert not outputs.policy.empty
     assert not outputs.allocation_signal.empty
+    assert not outputs.signal_explainability.empty
     assert not outputs.cohort_summary.empty
     assert outputs.metrics["effective_leverage_max"].max() <= 3.0
     assert outputs.metrics["total_contributed"].min() >= config.dca_initial_cash
@@ -106,6 +107,17 @@ def test_policy_optimizer_outputs_dca_metrics_and_allocation_signal():
         "cohort_validation_status",
         "eligible_for_candidate",
     }.issubset(outputs.metrics.columns)
+    assert {
+        "category",
+        "indicator_name",
+        "current_value",
+        "threshold",
+        "signal_state",
+        "action",
+        "reason",
+    }.issubset(outputs.signal_explainability.columns)
+    assert "Next lower leverage trigger" in set(outputs.signal_explainability["indicator_name"])
+    assert "QQQ adjusted close" in set(outputs.signal_explainability["indicator_name"])
     assert {
         "regime",
         "reason",
@@ -330,6 +342,7 @@ def test_dca_policy_optimizer_report_writes_html_and_csv(tmp_path):
     assert result.cohorts_path.exists()
     assert result.cohort_summary_path.exists()
     assert result.allocation_signal_path.exists()
+    assert result.signal_explainability_path.exists()
     html = result.html_path.read_text(encoding="utf-8")
     assert "DCA Policy Optimizer" in html
     assert "Monthly Allocation Signal" in html
@@ -344,6 +357,7 @@ def test_dca_policy_optimizer_report_writes_html_and_csv(tmp_path):
     assert "Compare Lab" in html
     assert "不是投資建議" in html
     assert "policy CSV" in html
+    assert "signal explainability CSV" in html
 
 
 def test_fast_policy_config_reduces_scan_space():

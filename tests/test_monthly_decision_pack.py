@@ -113,6 +113,8 @@ def test_monthly_decision_pack_writes_html_csv_and_history(tmp_path):
     html = result.html_path.read_text(encoding="utf-8")
     assert "Monthly Decision Pack" in html
     assert "本月結論" in html
+    assert "本月訊號解釋" in html
+    assert "Next lower leverage trigger" in html
     assert "配置比例" in html
     assert "為什麼需要 review" in html
     assert "上期 vs 本期" in html
@@ -157,6 +159,7 @@ def write_optimizer_fixture(output_dir: Path) -> None:
     sample_metrics().to_csv(paths.metrics, index=False)
     sample_cohort_summary().to_csv(paths.cohort_summary, index=False)
     sample_allocation_signal().to_csv(paths.allocation_signal, index=False)
+    sample_signal_explainability().to_csv(paths.signal_explainability, index=False)
     pd.DataFrame({"date": ["2026-01-01"]}).to_csv(paths.policy, index=False)
     pd.DataFrame({"fold_index": [1]}).to_csv(paths.walk_forward, index=False)
     pd.DataFrame({"cohort_start": ["2020-01-01"]}).to_csv(paths.cohorts, index=False)
@@ -193,6 +196,39 @@ def sample_allocation_signal(
                 "review_now": review_now,
                 "weight_sum": tqqq_weight + cash_weight,
             }
+        ]
+    )
+
+
+def sample_signal_explainability() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "as_of_date": "2025-12-30",
+                "data_mode": "actual_etf",
+                "scenario_id": "actual_etf--dca-policy-test",
+                "scenario_label": "Test Policy",
+                "category": "price",
+                "indicator_name": "QQQ adjusted close",
+                "current_value": 500.0,
+                "threshold": "",
+                "signal_state": "latest available close",
+                "action": "Use as the current signal reference price.",
+                "reason": "test",
+            },
+            {
+                "as_of_date": "2025-12-30",
+                "data_mode": "actual_etf",
+                "scenario_id": "actual_etf--dca-policy-test",
+                "scenario_label": "Test Policy",
+                "category": "trigger",
+                "indicator_name": "Next lower leverage trigger",
+                "current_value": 500.0,
+                "threshold": "QQQ close <= 450.00",
+                "signal_state": "risk-on",
+                "action": "If price breaks below the selected moving average, de-risk.",
+                "reason": "test",
+            },
         ]
     )
 

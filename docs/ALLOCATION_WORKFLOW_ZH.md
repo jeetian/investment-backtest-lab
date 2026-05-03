@@ -25,6 +25,15 @@ reports/monthly_decision_pack_qqq.html
 - 為什麼需要或不需要 review。
 - 上期與本期配置是否改變。
 
+新增的 `本月訊號解釋` 區塊用來回答「為什麼現在是這個配置」：
+
+- QQQ 目前價格與均線距離。
+- 3M / 6M / 12M momentum。
+- 63D / 126D realized volatility。
+- 從高點回撤幅度。
+- 目前 target leverage 與 QQQ/QLD/TQQQ/CASH 權重。
+- 下一個可能降槓桿或加槓桿的觸發條件。
+
 3. 再打開研究後台。
 
 ```text
@@ -66,6 +75,7 @@ reports/dca_policy_optimizer_qqq.html
 
 - `reports/dca_policy_optimizer_qqq_policy.csv`
 - `reports/dca_policy_optimizer_qqq_allocation_signal.csv`
+- `reports/dca_policy_optimizer_qqq_signal_explainability.csv`
 - `reports/dca_policy_optimizer_qqq_cohort_summary.csv`
 - `reports/monthly_decision_pack_qqq.csv`
 - `reports/monthly_decision_pack_qqq_signal_history.csv`

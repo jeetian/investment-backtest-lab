@@ -49,6 +49,7 @@ class DCAPolicyOptimizerOutputs:
     cohorts: pd.DataFrame
     cohort_summary: pd.DataFrame
     allocation_signal: pd.DataFrame
+    signal_explainability: pd.DataFrame
     payload: dict[str, Any]
     scan_mode: str
 
@@ -62,6 +63,7 @@ class DCAPolicyOptimizerReportResult:
     cohorts: pd.DataFrame
     cohort_summary: pd.DataFrame
     allocation_signal: pd.DataFrame
+    signal_explainability: pd.DataFrame
     payload: dict[str, Any]
     html_path: Path
     metrics_path: Path
@@ -70,6 +72,7 @@ class DCAPolicyOptimizerReportResult:
     cohorts_path: Path
     cohort_summary_path: Path
     allocation_signal_path: Path
+    signal_explainability_path: Path
     payload_path: Path
     scan_mode: str
 
@@ -217,6 +220,12 @@ def build_dca_policy_optimizer_outputs(
         trading_index=_combined_trading_index(mode_prices),
         top_n=config.top_n,
     )
+    signal_explainability = build_signal_explainability(
+        allocation_signal=allocation_signal,
+        policy=policy,
+        mode_prices=mode_prices,
+        config=config,
+    )
     payload = build_policy_compare_payload(
         metrics=metrics,
         curves=curves,
@@ -231,6 +240,7 @@ def build_dca_policy_optimizer_outputs(
         cohorts=cohorts,
         cohort_summary=cohort_summary,
         allocation_signal=allocation_signal,
+        signal_explainability=signal_explainability,
         payload=payload,
         scan_mode=scan_mode,
     )
@@ -863,6 +873,185 @@ def build_allocation_signal(
     return signal
 
 
+def build_signal_explainability(
+    *,
+    allocation_signal: pd.DataFrame,
+    policy: pd.DataFrame,
+    mode_prices: dict[str, pd.DataFrame],
+    config: DCAPolicyOptimizerConfig,
+) -> pd.DataFrame:
+    if allocation_signal.empty or policy.empty:
+        return _empty_signal_explainability_frame()
+    signal = allocation_signal.iloc[0]
+    scenario_id = str(signal["scenario_id"])
+    data_mode = str(signal.get("data_mode", DATA_MODE_ACTUAL))
+    scenario_policy = policy[policy["scenario_id"].astype(str) == scenario_id].sort_values("date")
+    if scenario_policy.empty:
+        return _empty_signal_explainability_frame()
+    latest = scenario_policy.iloc[-1]
+    prices = mode_prices.get(data_mode)
+    if prices is None or prices.empty:
+        return _empty_signal_explainability_frame()
+    base_ticker = "QQQ" if "QQQ" in prices.columns else str(prices.columns[0])
+    base = prices[base_ticker].astype(float).dropna()
+    as_of = pd.Timestamp(latest["date"])
+    base = base[base.index <= as_of]
+    if base.empty:
+        return _empty_signal_explainability_frame()
+
+    current_price = float(base.iloc[-1])
+    rows: list[dict[str, Any]] = []
+
+    def add_row(
+        category: str,
+        indicator_name: str,
+        current_value: Any,
+        threshold: Any,
+        signal_state: str,
+        action: str,
+        reason: str,
+    ) -> None:
+        rows.append(
+            {
+                "as_of_date": as_of.date().isoformat(),
+                "data_mode": data_mode,
+                "scenario_id": scenario_id,
+                "scenario_label": signal.get("scenario_label", ""),
+                "category": category,
+                "indicator_name": indicator_name,
+                "current_value": current_value,
+                "threshold": threshold,
+                "signal_state": signal_state,
+                "action": action,
+                "reason": reason,
+            }
+        )
+
+    add_row(
+        "policy",
+        "Current regime",
+        latest.get("regime", ""),
+        "",
+        str(latest.get("regime", "")),
+        _allocation_summary(signal),
+        str(latest.get("reason", "")),
+    )
+    add_row(
+        "policy",
+        "Target effective leverage",
+        latest.get("target_effective_leverage", np.nan),
+        "0x to 3x product exposure",
+        _leverage_state(_safe(latest.get("target_effective_leverage"))),
+        _weights_action(latest),
+        "QQQ/QLD/TQQQ/CASH weights are mapped from target leverage.",
+    )
+    add_row(
+        "price",
+        f"{base_ticker} adjusted close",
+        current_price,
+        "",
+        "latest available close",
+        "Use as the current signal reference price.",
+        "Actual ETF uses adjusted close; synthetic stress uses QQQ-derived daily-reset prices.",
+    )
+
+    for window in sorted(set([100, 150, 200, 250, *config.trend_windows])):
+        ma = base.rolling(int(window)).mean().iloc[-1]
+        if pd.isna(ma):
+            continue
+        distance = current_price / float(ma) - 1.0
+        state = "above" if distance >= 0 else "below"
+        add_row(
+            "trend",
+            f"{base_ticker} vs {window}MA",
+            distance,
+            float(ma),
+            f"{state} by {distance:.2%}",
+            _trend_action(state),
+            "Trend ladders usually add leverage above the moving average and reduce below it.",
+        )
+
+    for window in sorted(set([63, 126, 252, *config.momentum_windows])):
+        if len(base) <= int(window):
+            continue
+        momentum = base.iloc[-1] / base.shift(int(window)).iloc[-1] - 1.0
+        if pd.isna(momentum):
+            continue
+        state = "positive" if momentum > 0 else "negative"
+        add_row(
+            "momentum",
+            f"{window}D momentum",
+            float(momentum),
+            "0%",
+            state,
+            "Positive momentum supports risk-on; negative momentum supports de-risking.",
+            "Momentum+Trend policy requires prior momentum and trend confirmation.",
+        )
+
+    returns = base.pct_change()
+    volatility_targets = " / ".join(f"{value:.0%}" for value in config.volatility_targets)
+    for window in sorted(set([63, 126, *config.volatility_windows])):
+        volatility = returns.rolling(int(window)).std(ddof=0).iloc[-1] * np.sqrt(252)
+        if pd.isna(volatility):
+            continue
+        add_row(
+            "volatility",
+            f"{window}D realized volatility",
+            float(volatility),
+            volatility_targets,
+            _volatility_state(float(volatility), config),
+            "Higher realized volatility lowers target leverage in vol-target policies.",
+            "Volatility is annualized from daily returns.",
+        )
+
+    drawdown = base / base.cummax() - 1.0
+    current_drawdown = float(drawdown.iloc[-1])
+    guards = " / ".join(f"{value:.0%}" for value in config.drawdown_guards)
+    add_row(
+        "drawdown",
+        f"{base_ticker} drawdown from peak",
+        current_drawdown,
+        guards,
+        _drawdown_state(current_drawdown, config),
+        "Deeper drawdowns reduce target leverage in drawdown ladder policies.",
+        "Drawdown is measured from the prior running high.",
+    )
+
+    regime_days = _days_since_last_change(scenario_policy["regime"], scenario_policy["date"])
+    target_days = _days_since_last_change(
+        scenario_policy["target_effective_leverage"],
+        scenario_policy["date"],
+    )
+    add_row(
+        "stability",
+        "Regime age",
+        regime_days,
+        "",
+        f"{regime_days} calendar days",
+        "Longer regime age means the signal has not just flipped today.",
+        "Computed from the selected policy history.",
+    )
+    add_row(
+        "stability",
+        "Target leverage age",
+        target_days,
+        "",
+        f"{target_days} calendar days",
+        "Short age means the recommended leverage changed recently.",
+        "Computed from the selected policy history.",
+    )
+
+    for row in _trigger_rows(
+        latest=latest,
+        current_price=current_price,
+        current_drawdown=current_drawdown,
+        config=config,
+    ):
+        add_row(**row)
+
+    return pd.DataFrame(rows)
+
+
 def _allocation_summary(row: pd.Series) -> str:
     return (
         f"{float(row.get('target_effective_leverage', 0.0)):.2f}x target: "
@@ -984,6 +1173,7 @@ def write_dca_policy_optimizer_report(
     cohorts_path = output_dir / f"{prefix}_cohorts.csv"
     cohort_summary_path = output_dir / f"{prefix}_cohort_summary.csv"
     allocation_signal_path = output_dir / f"{prefix}_allocation_signal.csv"
+    signal_explainability_path = output_dir / f"{prefix}_signal_explainability.csv"
     payload_path = output_dir / f"{prefix}_compare_payload.json"
     outputs.metrics.to_csv(metrics_path, index=False)
     outputs.policy.to_csv(policy_path, index=False)
@@ -991,6 +1181,7 @@ def write_dca_policy_optimizer_report(
     outputs.cohorts.to_csv(cohorts_path, index=False)
     outputs.cohort_summary.to_csv(cohort_summary_path, index=False)
     outputs.allocation_signal.to_csv(allocation_signal_path, index=False)
+    outputs.signal_explainability.to_csv(signal_explainability_path, index=False)
     payload_path.write_text(
         json.dumps(outputs.payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -1009,6 +1200,7 @@ def write_dca_policy_optimizer_report(
             cohorts_path=cohorts_path,
             cohort_summary_path=cohort_summary_path,
             allocation_signal_path=allocation_signal_path,
+            signal_explainability_path=signal_explainability_path,
             payload_path=payload_path,
             config_path=config_path,
             scan_mode=outputs.scan_mode,
@@ -1023,6 +1215,7 @@ def write_dca_policy_optimizer_report(
         cohorts=outputs.cohorts,
         cohort_summary=outputs.cohort_summary,
         allocation_signal=outputs.allocation_signal,
+        signal_explainability=outputs.signal_explainability,
         payload=outputs.payload,
         html_path=html_path,
         metrics_path=metrics_path,
@@ -1031,6 +1224,7 @@ def write_dca_policy_optimizer_report(
         cohorts_path=cohorts_path,
         cohort_summary_path=cohort_summary_path,
         allocation_signal_path=allocation_signal_path,
+        signal_explainability_path=signal_explainability_path,
         payload_path=payload_path,
         scan_mode=outputs.scan_mode,
     )
@@ -1050,6 +1244,7 @@ def render_dca_policy_optimizer_html(
     cohorts_path: Path,
     cohort_summary_path: Path,
     allocation_signal_path: Path,
+    signal_explainability_path: Path,
     payload_path: Path,
     config_path: Path,
     scan_mode: str,
@@ -1328,6 +1523,7 @@ def render_dca_policy_optimizer_html(
     <a href="{cohorts_path.name}">cohorts CSV</a>
     <a href="{cohort_summary_path.name}">cohort summary CSV</a>
     <a href="{allocation_signal_path.name}">allocation signal CSV</a>
+    <a href="{signal_explainability_path.name}">signal explainability CSV</a>
     <a href="{payload_path.name}">payload JSON</a>
   </section>
 </main>
@@ -1819,6 +2015,24 @@ def _empty_cohort_summary_frame() -> pd.DataFrame:
     )
 
 
+def _empty_signal_explainability_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "as_of_date",
+            "data_mode",
+            "scenario_id",
+            "scenario_label",
+            "category",
+            "indicator_name",
+            "current_value",
+            "threshold",
+            "signal_state",
+            "action",
+            "reason",
+        ]
+    )
+
+
 def _xirr_from_curve(curve: pd.DataFrame) -> float:
     cash_flows: list[tuple[pd.Timestamp, float]] = []
     for row in curve.itertuples():
@@ -1863,6 +2077,198 @@ def _safe(value: Any) -> float:
     if pd.isna(value):
         return 0.0
     return float(value)
+
+
+def _leverage_state(target_leverage: float) -> str:
+    if target_leverage >= 2.5:
+        return "high leverage"
+    if target_leverage >= 1.5:
+        return "moderate leverage"
+    if target_leverage > 0:
+        return "defensive or low leverage"
+    return "cash defensive"
+
+
+def _weights_action(row: pd.Series) -> str:
+    parts = []
+    for ticker in ["QQQ", "QLD", "TQQQ", CASH]:
+        value = row.get(f"{ticker}_weight", np.nan)
+        if pd.notna(value):
+            parts.append(f"{ticker} {_format_percent(value)}")
+    return ", ".join(parts)
+
+
+def _trend_action(state: str) -> str:
+    if state == "above":
+        return "Trend is supportive; trend policies can hold or add leverage."
+    return "Trend is defensive; trend policies can reduce leverage or hold cash."
+
+
+def _volatility_state(volatility: float, config: DCAPolicyOptimizerConfig) -> str:
+    targets = sorted(float(value) for value in config.volatility_targets)
+    if not targets:
+        return "volatility observed"
+    if volatility <= targets[0]:
+        return "low volatility"
+    if volatility <= targets[-1]:
+        return "medium volatility"
+    return "high volatility"
+
+
+def _drawdown_state(drawdown: float, config: DCAPolicyOptimizerConfig) -> str:
+    guards = sorted((float(value) for value in config.drawdown_guards), reverse=True)
+    breached = [guard for guard in guards if drawdown <= guard]
+    if not breached:
+        return "near high or shallow drawdown"
+    return f"breached {breached[-1]:.0%} guard"
+
+
+def _days_since_last_change(values: pd.Series, dates: pd.Series) -> int:
+    if values.empty:
+        return 0
+    clean_values = values.reset_index(drop=True)
+    clean_dates = pd.to_datetime(pd.Series(dates)).reset_index(drop=True)
+    current = clean_values.iloc[-1]
+    change_index = 0
+    for idx in range(len(clean_values) - 1, -1, -1):
+        if clean_values.iloc[idx] != current:
+            change_index = idx + 1
+            break
+    start_date = clean_dates.iloc[change_index]
+    end_date = clean_dates.iloc[-1]
+    return int((end_date - start_date).days)
+
+
+def _trigger_rows(
+    *,
+    latest: pd.Series,
+    current_price: float,
+    current_drawdown: float,
+    config: DCAPolicyOptimizerConfig,
+) -> list[dict[str, Any]]:
+    family = str(latest.get("strategy_family", ""))
+    trend_value = latest.get("trend_value", np.nan)
+    momentum_value = latest.get("momentum_value", np.nan)
+    target = _safe(latest.get("target_effective_leverage"))
+    rows: list[dict[str, Any]] = []
+
+    def trigger(
+        indicator_name: str,
+        current_value: Any,
+        threshold: Any,
+        signal_state: str,
+        action: str,
+        reason: str,
+    ) -> None:
+        rows.append(
+            {
+                "category": "trigger",
+                "indicator_name": indicator_name,
+                "current_value": current_value,
+                "threshold": threshold,
+                "signal_state": signal_state,
+                "action": action,
+                "reason": reason,
+            }
+        )
+
+    if family == "trend_ladder" and pd.notna(trend_value):
+        trigger(
+            "Next lower leverage trigger",
+            current_price,
+            f"QQQ close <= {float(trend_value):.2f}",
+            "risk-on" if current_price > float(trend_value) else "risk-off",
+            "If price breaks below the selected moving average, next policy check de-risks.",
+            "Trend ladder uses prior close versus moving average.",
+        )
+        trigger(
+            "Next higher leverage trigger",
+            current_price,
+            f"QQQ close > {float(trend_value):.2f}",
+            "risk-on" if target > 1 else "risk-off",
+            "If price is back above the selected moving average, next policy check can add risk.",
+            "The exact target is determined by the selected policy parameters.",
+        )
+        return rows
+
+    if family == "momentum_trend_ladder" and pd.notna(trend_value):
+        momentum_text = _format_percent(momentum_value) if pd.notna(momentum_value) else "n/a"
+        trigger(
+            "Next lower leverage trigger",
+            f"price {current_price:.2f}; momentum {momentum_text}",
+            f"momentum <= 0% or QQQ close <= {float(trend_value):.2f}",
+            "risk-on" if target > 1 else "risk-off",
+            "Either trend break or momentum turning negative can lower target leverage.",
+            "Momentum+Trend requires both prior momentum and prior trend confirmation.",
+        )
+        trigger(
+            "Next higher leverage trigger",
+            f"price {current_price:.2f}; momentum {momentum_text}",
+            f"momentum > 0% and QQQ close > {float(trend_value):.2f}",
+            "risk-on" if target > 1 else "risk-off",
+            "Both momentum and trend must be positive before risk-on leverage is restored.",
+            "This is a next-check trigger, not an intraday trading rule.",
+        )
+        return rows
+
+    if family == "drawdown_ladder":
+        guards = sorted((float(value) for value in config.drawdown_guards), reverse=True)
+        next_lower = next((guard for guard in guards if current_drawdown > guard), None)
+        next_higher = next((guard for guard in guards if current_drawdown <= guard), None)
+        trigger(
+            "Next lower leverage trigger",
+            current_drawdown,
+            _format_percent(next_lower) if next_lower is not None else "no lower guard",
+            _drawdown_state(current_drawdown, config),
+            "If drawdown crosses the next guard, target leverage steps down.",
+            "Drawdown ladder uses QQQ drawdown from its prior peak.",
+        )
+        trigger(
+            "Next higher leverage trigger",
+            current_drawdown,
+            _format_percent(next_higher) if next_higher is not None else "near high",
+            _drawdown_state(current_drawdown, config),
+            "If drawdown recovers above the prior guard, target leverage can step up.",
+            "Recovery is evaluated on the next scheduled policy check.",
+        )
+        return rows
+
+    if family == "vol_target_ladder":
+        trigger(
+            "Next lower leverage trigger",
+            latest.get("volatility_value", np.nan),
+            "higher realized volatility",
+            _volatility_state(_safe(latest.get("volatility_value")), config),
+            "Target leverage falls when realized volatility rises.",
+            "Vol target policies map target volatility divided by realized volatility.",
+        )
+        trigger(
+            "Next higher leverage trigger",
+            latest.get("volatility_value", np.nan),
+            "lower realized volatility",
+            _volatility_state(_safe(latest.get("volatility_value")), config),
+            "Target leverage rises when realized volatility falls.",
+            "The target is capped at 3x product exposure.",
+        )
+        return rows
+
+    trigger(
+        "Next lower leverage trigger",
+        target,
+        "not dynamic",
+        "constant policy",
+        "Constant leverage has no indicator-based de-risk trigger.",
+        "Use risk reports and manual review for constant policies.",
+    )
+    trigger(
+        "Next higher leverage trigger",
+        target,
+        "not dynamic",
+        "constant policy",
+        "Constant leverage has no indicator-based add-risk trigger.",
+        "Use risk reports and manual review for constant policies.",
+    )
+    return rows
 
 
 def _validation_rank(status: str) -> int:
@@ -2184,6 +2590,7 @@ __all__ = [
     "build_policy_walk_forward_validation",
     "build_policy_weights",
     "build_rolling_cohort_validation",
+    "build_signal_explainability",
     "policy_config_for_scan_mode",
     "rank_policy_metrics",
     "render_dca_policy_optimizer_html",

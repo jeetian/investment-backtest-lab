@@ -40,6 +40,7 @@ class OptimizerOutputPaths:
     cohorts: Path
     cohort_summary: Path
     allocation_signal: Path
+    signal_explainability: Path
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ def optimizer_output_paths(output_dir: Path, family: str) -> OptimizerOutputPath
         cohorts=output_dir / f"{prefix}_cohorts.csv",
         cohort_summary=output_dir / f"{prefix}_cohort_summary.csv",
         allocation_signal=output_dir / f"{prefix}_allocation_signal.csv",
+        signal_explainability=output_dir / f"{prefix}_signal_explainability.csv",
     )
 
 
@@ -68,7 +70,7 @@ def load_optimizer_outputs(
     output_dir: Path,
     family: str,
     require_outputs: bool,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     paths = optimizer_output_paths(output_dir, family)
     missing = [path for path in vars(paths).values() if not path.exists()]
     if missing:
@@ -82,12 +84,13 @@ def load_optimizer_outputs(
                 "--config configs\\mvp_example.yaml --family qqq "
                 "--scan-mode fast --cohort-validation"
             )
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     return (
         pd.read_csv(paths.metrics),
         pd.read_csv(paths.walk_forward),
         pd.read_csv(paths.cohort_summary),
         pd.read_csv(paths.allocation_signal),
+        pd.read_csv(paths.signal_explainability),
     )
 
 
@@ -128,10 +131,12 @@ def write_monthly_decision_pack_report(
     config: MonthlyDecisionPackConfig,
 ) -> MonthlyDecisionPackResult:
     output_dir.mkdir(parents=True, exist_ok=True)
-    metrics, _walk_forward, cohort_summary, allocation_signal = load_optimizer_outputs(
-        output_dir=output_dir,
-        family=family,
-        require_outputs=config.require_optimizer_outputs,
+    metrics, _walk_forward, cohort_summary, allocation_signal, signal_explainability = (
+        load_optimizer_outputs(
+            output_dir=output_dir,
+            family=family,
+            require_outputs=config.require_optimizer_outputs,
+        )
     )
     prefix = f"monthly_decision_pack_{family.lower()}"
     html_path = output_dir / f"{prefix}.html"
@@ -152,6 +157,7 @@ def write_monthly_decision_pack_report(
         render_monthly_decision_pack_html(
             decision=decision,
             history=updated_history,
+            signal_explainability=signal_explainability,
             csv_path=csv_path,
             history_path=history_path,
         ),
@@ -170,6 +176,7 @@ def render_monthly_decision_pack_html(
     *,
     decision: pd.DataFrame,
     history: pd.DataFrame,
+    signal_explainability: pd.DataFrame,
     csv_path: Path,
     history_path: Path,
 ) -> str:
@@ -216,6 +223,15 @@ def render_monthly_decision_pack_html(
       <p><strong>Change:</strong> {escape(str(row["weight_change_summary"]))}</p>
       <p><strong>Review reasons:</strong> {escape(str(row["review_reasons"]) or "無")}</p>
     </div>
+  </section>
+
+  <section class="panel">
+    <h2>本月訊號解釋</h2>
+    <p class="lede">
+      這裡把 optimizer 的最新 policy 拆成可檢查的指標：趨勢、動能、波動、回撤、
+      目前目標槓桿，以及下一個可能加減槓桿的觸發條件。
+    </p>
+    {_render_signal_explainability(signal_explainability)}
   </section>
 
   <section class="panel">
@@ -528,6 +544,44 @@ def _render_weight_card(label: str, value: Any) -> str:
     """
 
 
+def _render_signal_explainability(frame: pd.DataFrame) -> str:
+    if frame.empty:
+        return "<p>No signal explainability data. Please rerun the DCA policy optimizer.</p>"
+    policy_rows = frame[frame["category"].astype(str) == "policy"]
+    trigger_rows = frame[frame["category"].astype(str) == "trigger"]
+    indicator_rows = frame[~frame["category"].astype(str).isin(["policy", "trigger"])]
+    cards = []
+    for row in policy_rows.head(2).itertuples(index=False):
+        row_dict = row._asdict()
+        cards.append(
+            f"""
+            <div class="card">
+              <span>{escape(str(row_dict.get("indicator_name", "")))}</span>
+              <strong>{escape(_format_explain_value(row_dict.get("current_value")))}</strong>
+              <p>{escape(str(row_dict.get("action", "")))}</p>
+            </div>
+            """
+        )
+    for row in trigger_rows.head(2).itertuples(index=False):
+        row_dict = row._asdict()
+        cards.append(
+            f"""
+            <div class="card">
+              <span>{escape(str(row_dict.get("indicator_name", "")))}</span>
+              <strong>{escape(str(row_dict.get("threshold", "")))}</strong>
+              <p>{escape(str(row_dict.get("action", "")))}</p>
+            </div>
+            """
+        )
+    return f"""
+    <div class="cards">{"".join(cards)}</div>
+    <h3>指標明細</h3>
+    <div class="table-wrap">{_render_table(indicator_rows, _explainability_columns())}</div>
+    <h3>觸發條件</h3>
+    <div class="table-wrap">{_render_table(trigger_rows, _explainability_columns())}</div>
+    """
+
+
 def _render_allocation_bar(row: pd.Series) -> str:
     segments = []
     for ticker, css_class, column in [
@@ -673,6 +727,18 @@ def _history_columns() -> list[tuple[str, str]]:
     ]
 
 
+def _explainability_columns() -> list[tuple[str, str]]:
+    return [
+        ("category", "Category"),
+        ("indicator_name", "Indicator"),
+        ("current_value", "Current"),
+        ("threshold", "Threshold"),
+        ("signal_state", "State"),
+        ("action", "Action"),
+        ("reason", "Reason"),
+    ]
+
+
 def _format_cell(value: Any, key: str) -> str:
     if pd.isna(value):
         return ""
@@ -680,7 +746,20 @@ def _format_cell(value: Any, key: str) -> str:
         return _format_percent(value)
     if key == "target_effective_leverage":
         return _format_leverage(value)
+    if key == "current_value":
+        return _format_explain_value(value)
     return str(value)
+
+
+def _format_explain_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    number = _safe_float(value)
+    if np.isnan(number):
+        return str(value)
+    if abs(number) <= 3:
+        return f"{number:.2%}" if abs(number) <= 1 else f"{number:.2f}x"
+    return f"{number:,.2f}"
 
 
 def _format_percent(value: Any) -> str:
