@@ -28,6 +28,11 @@ C:\Users\Ian Lai\Desktop\Python\investment-backtest-lab\reports
    - Monte Carlo trials 的分層摘要。
    - 日常查 expected XIRR、p05 XIRR、win rate、drawdown breach rate 時看這個。
 
+4. `reports\monthly_decision_review_qqq.md`
+   - 月度人工 review 紀錄。
+   - 用來留下本月是 `pending_review`、`accepted`、`deferred`、`rejected` 或 `override`。
+   - 這份檔案只記錄人工判斷，不會改變 ranking 或權重計算。
+
 ## 目前最新結果
 
 - 決策 authority：`hybrid_primary_monte_carlo`
@@ -64,6 +69,18 @@ cd "C:\Users\Ian Lai\Desktop\Python\investment-backtest-lab"
 
 ```powershell
 python -m uv run python scripts\analyze_monthly_decision_comparison.py --config configs\mvp_example.yaml --family qqq
+```
+
+月度流程最後一步：產生人工 review record：
+
+```powershell
+python -m uv run python scripts\record_monthly_decision_review.py --family qqq --status pending_review --reviewer "Ian"
+```
+
+若你已人工確認仍接受 recommendation，可以改成：
+
+```powershell
+python -m uv run python scripts\record_monthly_decision_review.py --family qqq --status accepted --reviewer "Ian" --notes "Reviewed actual-primary divergence."
 ```
 
 重新跑 actual-primary 月度參考包：

@@ -50,11 +50,18 @@ python -m uv run python scripts\analyze_monthly_decision_replay.py --config conf
 python -m uv run python scripts\analyze_monthly_decision_comparison.py --config configs\mvp_example.yaml --family qqq
 ```
 
+產生人工 review 紀錄：
+
+```powershell
+python -m uv run python scripts\record_monthly_decision_review.py --family qqq --status pending_review --reviewer "Ian"
+```
+
 ## 最重要的輸出
 
 日常先看：
 
 - `reports/monthly_decision_comparison_qqq.html`：一頁決策包，顯示正式推薦策略、可交易權重、review 狀態、MC 風控摘要與 source coverage。
+- `reports/monthly_decision_review_qqq.md`：人工 review 紀錄，留下本月是否接受、延後或覆核的決策痕跡。
 - `reports/monthly_decision_comparison_qqq_top_candidates.csv`：top candidates 摘要。
 - `reports/monthly_decision_replay_qqq_mc_summary.csv`：Monte Carlo trials 分層摘要。
 
@@ -71,6 +78,7 @@ python -m uv run python scripts\analyze_monthly_decision_comparison.py --config 
 - Monte Carlo ranking 是正式主排名，expected XIRR 是主要 objective。
 - deterministic rolling cohort gate 是硬風控 gate。
 - actual-primary monthly decision pack 保留為參考訊號；和 hybrid-primary authority 不同不代表錯誤，而是人工 review 要看的分歧。
+- review record 只記錄人工判斷，不會改變 ranking 或權重計算。
 
 ## Runtime
 

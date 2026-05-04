@@ -33,10 +33,19 @@ reports/monthly_decision_comparison_qqq.html
 - MC risk 摘要：expected XIRR、p05 XIRR、win rate、drawdown breach rate、cohort gate。
 - source coverage：QQQ/QLD/TQQQ 哪段使用 actual，哪段使用 synthetic backfill。
 
+人工確認後再產生 review record：
+
+```powershell
+python -m uv run python scripts\record_monthly_decision_review.py --family qqq --status pending_review --reviewer "Ian"
+```
+
+comparison HTML 是決策入口；review record 是人工確認留痕。它只記錄本月 review 狀態、reviewer、notes 與審計證據路徑，不會改變 ranking 或權重。
+
 日常可讀 CSV：
 
 - `reports/monthly_decision_comparison_qqq.csv`
 - `reports/monthly_decision_comparison_qqq_top_candidates.csv`
+- `reports/monthly_decision_review_qqq.csv`
 - `reports/monthly_decision_replay_qqq_mc_summary.csv`
 - `reports/monthly_decision_replay_qqq_source_coverage.csv`
 
