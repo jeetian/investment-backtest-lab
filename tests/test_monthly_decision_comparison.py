@@ -1,10 +1,12 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from investment_backtest_lab.monthly_decision_comparison import (
     COMPARISON_COLUMNS,
     build_monthly_decision_comparison,
+    validate_monthly_decision_comparison_as_of,
     write_monthly_decision_comparison_report,
 )
 
@@ -85,6 +87,25 @@ def test_comparison_report_writes_html_and_csv(tmp_path: Path):
     assert "Vol Target 63D 35%" in html
     assert "Momentum+Trend 126D/200MA 3.0x to 1.0x" in html
     assert "2006-06-21" in html
+
+
+def test_comparison_as_of_check_rejects_stale_output():
+    outputs = build_monthly_decision_comparison(
+        monthly_decision=sample_monthly_pack(manual_review_required=False, review_reasons=""),
+        replay_ranking=sample_replay_ranking(),
+        actual_policy=sample_actual_policy(),
+        generated_at="2026-05-04T00:00:00+00:00",
+    )
+
+    validate_monthly_decision_comparison_as_of(
+        outputs.comparison,
+        expected_as_of="2025-12-30",
+    )
+    with pytest.raises(ValueError, match="not fresh enough"):
+        validate_monthly_decision_comparison_as_of(
+            outputs.comparison,
+            expected_as_of="2026-04-30",
+        )
 
 
 def sample_monthly_pack(

@@ -35,9 +35,12 @@ C:\Users\Ian Lai\Desktop\Python\investment-backtest-lab\reports
 
 ## 目前最新結果
 
+- 本次資料更新目標：`2026-04-30` 月底收盤。
+- 設定檔使用 `end_date: 2026-05-01`，因為 yfinance 的 `end` 是排他式，用來包含 `2026-04-30`。
+- 重新產生 comparison 時會自動檢查 `recommended_as_of_date` 是否為 `2026-04-30`。
 - 決策 authority：`hybrid_primary_monte_carlo`
-- 正式推薦策略：`Vol Target 63D 35%`
-- 最新 actual ETF 可交易權重：`QQQ 4% / QLD 96% / TQQQ 0% / CASH 0%`
+- 正式推薦策略：`Vol Target 63D 25%`
+- 最新 actual ETF 可交易權重：`QQQ 73% / QLD 27% / TQQQ 0% / CASH 0%`
 - actual-primary 參考策略：`Momentum+Trend 126D/200MA 3.0x to 1.0x`
 - actual-primary 與 hybrid-primary 不同不是程式錯誤，而是參考訊號分歧。正式推薦以 hybrid-primary authority 為主，差異留給人工 review。
 

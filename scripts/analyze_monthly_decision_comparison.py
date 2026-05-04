@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from datetime import timedelta
 from pathlib import Path
 
 from investment_backtest_lab.config import load_backtest_config
 from investment_backtest_lab.monthly_decision_comparison import (
+    validate_monthly_decision_comparison_as_of,
     write_monthly_decision_comparison_report,
 )
 
@@ -17,6 +19,14 @@ def main() -> None:
     parser.add_argument("--family", default="qqq")
     parser.add_argument("--output-dir", default="reports")
     parser.add_argument("--top-n", type=int, default=8)
+    parser.add_argument(
+        "--expected-as-of",
+        default=None,
+        help=(
+            "Required recommended_as_of_date. Defaults to config end_date minus one day "
+            "because yfinance end is exclusive."
+        ),
+    )
     args = parser.parse_args()
 
     config = load_backtest_config(args.config)
@@ -38,6 +48,11 @@ def main() -> None:
         top_n=args.top_n,
     )
     row = result.comparison.iloc[0]
+    expected_as_of = args.expected_as_of or (config.end_date - timedelta(days=1)).isoformat()
+    validate_monthly_decision_comparison_as_of(
+        result.comparison,
+        expected_as_of=expected_as_of,
+    )
     print("Monthly Decision Comparison")
     print(f"authority:   {row['decision_authority']}")
     print(f"recommended: {row['recommended_scenario_label']}")
@@ -53,6 +68,7 @@ def main() -> None:
     print(f"disagrees:   {bool(row['actual_disagrees_with_authority'])}")
     print(f"review:      {bool(row['manual_review_required'])}")
     print(f"reasons:     {row['review_reasons'] or 'None'}")
+    print(f"as-of check: {row['recommended_as_of_date']} == {expected_as_of}")
     print(f"HTML:        {result.html_path}")
     print(f"CSV:         {result.csv_path}")
     print(f"Top N:       {result.top_candidates_path}")

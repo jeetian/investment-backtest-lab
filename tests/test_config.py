@@ -6,6 +6,7 @@ def test_load_mvp_config():
     config = load_backtest_config("configs/mvp_example.yaml")
 
     assert config.base_currency == "TWD"
+    assert config.end_date.isoformat() == "2026-05-01"
     assert config.universe[0].market == Market.US
     assert config.universe[4].data_source == DataSource.FINMIND
     assert config.rebalance.target_weights["SPY"] == 0.60

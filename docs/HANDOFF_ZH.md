@@ -3,6 +3,8 @@
 ## 目前狀態
 
 - 專案已可在這台電腦用 `python -m uv` 執行。
+- 目前資料 cutoff 設為 `2026-05-01`，用來包含 `2026-04-30` 月底收盤。
+- comparison CLI 會檢查 `recommended_as_of_date` 是否符合 config end-exclusive cutoff。
 - 月度正式 replay selector 已改成 `hybrid_primary`。
 - `hybrid_primary` 的資料邏輯是：ETF 上市後使用 actual ETF，上市前使用 scaled synthetic backfill。
 - 正式策略排名由 Monte Carlo replay 主導，deterministic rolling cohort 保留為硬風控 gate 與審計軌跡。
@@ -11,8 +13,8 @@
 ## 最新觀察結果
 
 - replay authority：`hybrid_primary_monte_carlo`
-- 正式推薦策略：`Vol Target 63D 35%`
-- latest actual ETF 可交易權重：`QQQ 4% / QLD 96% / TQQQ 0% / CASH 0%`
+- 正式推薦策略：`Vol Target 63D 25%`
+- latest actual ETF 可交易權重：`QQQ 73% / QLD 27% / TQQQ 0% / CASH 0%`
 - actual-primary reference：`Momentum+Trend 126D/200MA 3.0x to 1.0x`
 - actual-primary reference 與 hybrid-primary authority 不同時，不視為錯誤；這代表參考訊號分歧，需要在一頁決策包中人工確認。
 

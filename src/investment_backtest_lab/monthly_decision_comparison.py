@@ -259,6 +259,22 @@ def write_monthly_decision_comparison_report(
     )
 
 
+def validate_monthly_decision_comparison_as_of(
+    comparison: pd.DataFrame,
+    *,
+    expected_as_of: str,
+) -> None:
+    if comparison.empty:
+        raise ValueError("Monthly decision comparison as-of check requires a non-empty frame.")
+    actual_as_of = str(comparison.iloc[0].get("recommended_as_of_date", ""))
+    if actual_as_of != expected_as_of:
+        raise ValueError(
+            "Monthly decision comparison is not fresh enough for the configured cutoff. "
+            f"Expected recommended_as_of_date {expected_as_of}, got {actual_as_of or 'blank'}. "
+            "Check yfinance availability and cache coverage before using this report."
+        )
+
+
 def render_monthly_decision_comparison_html(
     *,
     comparison: pd.DataFrame,
@@ -635,5 +651,6 @@ __all__ = [
     "build_monthly_decision_comparison",
     "load_monthly_decision_comparison_inputs",
     "render_monthly_decision_comparison_html",
+    "validate_monthly_decision_comparison_as_of",
     "write_monthly_decision_comparison_report",
 ]

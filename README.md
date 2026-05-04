@@ -20,6 +20,10 @@ python -m uv run pytest --basetemp=C:\Users\Ian Lai\Desktop\Python\pytest-fresh-
 
 ## 主要月度流程
 
+目前 `configs/mvp_example.yaml` 的資料截止設定是 `end_date: 2026-05-01`。這是
+yfinance 的 end-exclusive cutoff，用來包含 `2026-04-30` 月底收盤；月度決策
+comparison 會檢查 `recommended_as_of_date` 是否等於 `2026-04-30`。
+
 先產生 actual ETF policy 與 cohort gate：
 
 ```powershell
