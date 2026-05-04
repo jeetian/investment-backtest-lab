@@ -34,3 +34,12 @@ def test_load_mvp_config():
     assert config.leveraged_etf_lab.fast_top_n == 12
     assert config.leveraged_etf_lab.products["TQQQ"].leverage == 3.0
     assert config.leveraged_etf_lab.synthetic_failure_drawdown == -0.85
+    assert config.monthly_decision_replay.enabled is True
+    assert config.monthly_decision_replay.family == "qqq"
+    assert config.monthly_decision_replay.selector == "synthetic_primary"
+    assert config.monthly_decision_replay.benchmark == "qqq_dca"
+    assert config.monthly_decision_replay.horizons_years == (5, 10, 15, 20)
+    assert config.monthly_decision_replay.initial_cash == 10_000
+    assert config.monthly_decision_replay.monthly_contribution == 1_000
+    assert config.monthly_decision_replay.max_drawdown_limit == -0.95
+    assert config.monthly_decision_replay.min_win_rate == 0.50

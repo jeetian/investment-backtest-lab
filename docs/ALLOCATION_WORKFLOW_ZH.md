@@ -1,107 +1,95 @@
 # 月度配置工作流
 
-這份文件描述如何使用 DCA Policy Optimizer 產生研究版配置訊號。這不是投資建議，也不是自動下單流程。
+這份工具的目標是提供研究訊號，幫助人工決策 ETF / 基金配置。它不自動下單，
+不串券商，也不保證未來績效。
 
 ## 每月流程
 
-1. 更新依賴與研究資料。
+1. 更新環境與資料。
 
 ```powershell
 uv sync --extra dev
 uv run python scripts\analyze_dca_policy_optimizer.py --config configs\mvp_example.yaml --family qqq --scan-mode fast --cohort-validation
+```
+
+2. 產生月度決策包。
+
+```powershell
 uv run python scripts\analyze_monthly_decision_pack.py --config configs\mvp_example.yaml --family qqq
 ```
 
-2. 先打開月度決策入口。
+3. 打開主要入口。
 
 ```text
 reports/monthly_decision_pack_qqq.html
 ```
 
-這頁只回答四件事：
+先確認：
 
-- 本月研究配置是什麼。
-- 是否需要人工 review。
-- 為什麼需要或不需要 review。
-- 上期與本期配置是否改變。
+- 本月研究配置：QQQ / QLD / TQQQ / CASH 權重。
+- 目標有效槓桿。
+- regime 與 reason。
+- 是否需要 manual review。
+- 下一次月度調整日。
+- 上期 vs 本期配置是否改變。
 
-新增的 `本月訊號解釋` 區塊用來回答「為什麼現在是這個配置」：
-
-- QQQ 目前價格與均線距離。
-- 3M / 6M / 12M momentum。
-- 63D / 126D realized volatility。
-- 從高點回撤幅度。
-- 目前 target leverage 與 QQQ/QLD/TQQQ/CASH 權重。
-- 下一個可能降槓桿或加槓桿的觸發條件。
-
-3. 再打開研究後台。
+4. 若需要查細節，再打開研究後台。
 
 ```text
 reports/dca_policy_optimizer_qqq.html
 ```
 
-這頁用來查 optimizer 細節，不是第一入口。先看 `研究摘要`，再看 `Eligible Candidates` 與 `Rejected / Watchlist`。
+重點看：
 
-4. 在月度決策入口先看 `本月結論`。
+- Eligible Candidates。
+- Rejected / Watchlist。
+- Actual ETF 與 Synthetic Stress 是否互相矛盾。
+- Walk-Forward Validation。
+- Cohort Robustness。
+- signal explainability CSV。
 
-重點欄位：
+## Synthetic-Primary 對照流程
 
-- `as_of_date`
-- `scenario_label`
-- `regime`
-- `reason`
-- `target_effective_leverage`
-- `QQQ_weight`
-- `QLD_weight`
-- `TQQQ_weight`
-- `CASH_weight`
-- `next_rebalance_date`
-- `next_monitor_date`
-- `manual_review_required`
-- `review_reasons`
+如果你想讓壓測結果成為優先排序來源，請額外執行：
 
-5. 在 optimizer 後台看 `Eligible Candidates`。
+```powershell
+uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_example.yaml --family qqq --selector synthetic_primary
+```
 
-確認策略是否通過：
+輸出：
 
-- walk-forward。
-- rolling cohort。
-- synthetic stress。
-- cross-mode drawdown filter。
+```text
+reports/monthly_decision_replay_qqq.html
+```
 
-`Rejected / Watchlist` 不是刪除策略，而是把高 XIRR 但風險或穩健性不足的策略放在研究觀察區。
+這份報表用 synthetic stress ranking 和 rolling cohort replay 來評估每月決策流程。
+它會比較策略是否在不同起點與終點下打敗 `QQQ DCA` benchmark，並檢查是否跌破
+`-95%` 最大回撤硬線。
 
-6. 最後看 CSV。
+目前兩份報表的定位不同：
 
-- `reports/dca_policy_optimizer_qqq_policy.csv`
-- `reports/dca_policy_optimizer_qqq_allocation_signal.csv`
-- `reports/dca_policy_optimizer_qqq_signal_explainability.csv`
-- `reports/dca_policy_optimizer_qqq_cohort_summary.csv`
-- `reports/monthly_decision_pack_qqq.csv`
-- `reports/monthly_decision_pack_qqq_signal_history.csv`
+- `monthly_decision_pack_qqq.html`：actual-primary 主流程，適合每月例行閱讀。
+- `monthly_decision_replay_qqq.html`：synthetic-primary 壓測對照，適合檢查極端市場穩健性。
 
-## 週度監控
+在 synthetic-primary 邏輯正式成熟前，它不會自動覆蓋原本的 Monthly Decision Pack。
 
-週度監控只回答一件事：風險狀態是否惡化到需要人工檢查。
+## 每週流程
 
-- 正式調整節奏仍是每月。
-- `review_now = true` 時，只代表需要人工檢查，不代表自動交易。
-- 若市場狀態突然進入 defensive regime，可以人工決定是否提前處理。
+每週只做風險監控，不做自動調倉。觀察：
 
-## 人工判斷清單
+- `review_now` 是否為 true。
+- 是否跌破關鍵均線或風險線。
+- synthetic stress 或 cohort 是否出現高風險警示。
+- 是否需要人工檢查部位，而不是立即按工具自動交易。
 
-在採用任何研究訊號前，至少確認：
+## 人工決策檢查表
 
-- 是否理解策略規則。
-- 是否能接受最大回撤。
-- 是否能接受長時間修復期。
-- 是否願意承擔槓桿 ETF product 的追蹤誤差與產品風險。
-- 是否已確認這不是 margin loan 模型。
-- 是否知道 synthetic stress 不是實際 ETF 歷史。
+每次實際調整前，至少確認：
 
-## 不做的事
+- 策略不是只靠單一全期間 XIRR 排名。
+- 沒有跌破 `-95%` 最大回撤硬線。
+- Synthetic stress 的最差 cohort 可以接受。
+- Walk-forward 與 rolling cohort 結果沒有明顯不穩。
+- 目前配置符合你自己的現金流、風險承受度與投資限制。
 
-- 不自動下單。
-- 不串券商。
-- 不產生正式投資建議。
-- 不保證未來績效。
+這些報表是研究工具，不是投資建議。

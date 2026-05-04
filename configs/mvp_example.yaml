@@ -153,6 +153,17 @@ monthly_decision_pack:
   rebalance_cadence: monthly
   monitor_cadence: weekly
 
+monthly_decision_replay:
+  enabled: true
+  family: qqq
+  selector: synthetic_primary
+  benchmark: qqq_dca
+  horizons_years: [5, 10, 15, 20]
+  initial_cash: 10000
+  monthly_contribution: 1000
+  max_drawdown_limit: -0.95
+  min_win_rate: 0.50
+
 cost_model:
   tw:
     commission_rate: 0.001425

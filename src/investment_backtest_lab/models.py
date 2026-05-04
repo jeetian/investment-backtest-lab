@@ -397,6 +397,36 @@ class MonthlyDecisionPackConfig:
 
 
 @dataclass(frozen=True)
+class MonthlyDecisionReplayConfig:
+    enabled: bool = True
+    family: str = "qqq"
+    selector: str = "synthetic_primary"
+    benchmark: str = "qqq_dca"
+    horizons_years: tuple[int, ...] = (5, 10, 15, 20)
+    initial_cash: float = 10_000.0
+    monthly_contribution: float = 1_000.0
+    max_drawdown_limit: float = -0.95
+    min_win_rate: float = 0.50
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> MonthlyDecisionReplayConfig:
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            family=str(data.get("family", "qqq")).lower(),
+            selector=str(data.get("selector", "synthetic_primary")).lower(),
+            benchmark=str(data.get("benchmark", "qqq_dca")).lower(),
+            horizons_years=tuple(
+                int(value) for value in data.get("horizons_years", [5, 10, 15, 20])
+            ),
+            initial_cash=float(data.get("initial_cash", 10_000.0)),
+            monthly_contribution=float(data.get("monthly_contribution", 1_000.0)),
+            max_drawdown_limit=float(data.get("max_drawdown_limit", -0.95)),
+            min_win_rate=float(data.get("min_win_rate", 0.50)),
+        )
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     universe: list[AssetSpec]
     start_date: date
@@ -418,6 +448,9 @@ class BacktestConfig:
     )
     monthly_decision_pack: MonthlyDecisionPackConfig = field(
         default_factory=MonthlyDecisionPackConfig
+    )
+    monthly_decision_replay: MonthlyDecisionReplayConfig = field(
+        default_factory=MonthlyDecisionReplayConfig
     )
 
     @classmethod
@@ -443,6 +476,9 @@ class BacktestConfig:
             ),
             monthly_decision_pack=MonthlyDecisionPackConfig.from_dict(
                 data.get("monthly_decision_pack")
+            ),
+            monthly_decision_replay=MonthlyDecisionReplayConfig.from_dict(
+                data.get("monthly_decision_replay")
             ),
         )
 
