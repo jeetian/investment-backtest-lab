@@ -16,9 +16,9 @@ C:\Users\Ian Lai\Desktop\Python\investment-backtest-lab\reports
 
 1. `reports\monthly_decision_comparison_qqq.html`
    - 這是目前最重要的「一頁決策包」。
-   - 第一屏會直接回答：正式推薦策略、可交易權重、是否需要人工 review、review 原因。
-   - 正式決策來源是 `hybrid_primary` Monte Carlo ranking。
-   - 可交易權重來自同一策略在 latest actual ETF policy state 上的狀態。
+   - 第一屏會直接回答：research authority、actionable default、可交易權重、是否需要人工 review、review 原因。
+   - research authority 來自 `hybrid_primary` Monte Carlo expected-XIRR ranking。
+   - actionable default 是未人工 override 前的 zero-breach 可行動預設。
 
 2. `reports\monthly_decision_comparison_qqq_top_candidates.csv`
    - 日常檢查 top candidates 用。
@@ -39,10 +39,13 @@ C:\Users\Ian Lai\Desktop\Python\investment-backtest-lab\reports
 - 設定檔使用 `end_date: 2026-05-01`，因為 yfinance 的 `end` 是排他式，用來包含 `2026-04-30`。
 - 重新產生 comparison 時會自動檢查 `recommended_as_of_date` 是否為 `2026-04-30`。
 - 決策 authority：`hybrid_primary_monte_carlo`
-- 正式推薦策略：`Vol Target 63D 25%`
-- 最新 actual ETF 可交易權重：`QQQ 73% / QLD 27% / TQQQ 0% / CASH 0%`
+- Research authority：`Momentum+Trend 126D/200MA 3.0x to 1.0x`
+- Actionable default：`Vol Target 63D 25%`
+- 未人工 override 前的 actual ETF 可交易權重：`QQQ 73% / QLD 27% / TQQQ 0% / CASH 0%`
 - actual-primary 參考策略：`Momentum+Trend 126D/200MA 3.0x to 1.0x`
-- actual-primary 與 hybrid-primary 不同不是程式錯誤，而是參考訊號分歧。正式推薦以 hybrid-primary authority 為主，差異留給人工 review。
+- Research authority 的 MC breach rate 約 `3.83%`，expected XIRR 約 `21.78%`；若要採用它，必須用 review `override`。
+- Actionable default 的 MC breach rate 是 `0%`，expected XIRR 約 `16.30%`。
+- actual-primary 與 hybrid-primary 不同不是程式錯誤，而是參考訊號分歧。未 override 前以 actionable default 為可行動預設。
 
 ## 大型審計檔
 
@@ -84,6 +87,12 @@ python -m uv run python scripts\record_monthly_decision_review.py --family qqq -
 
 ```powershell
 python -m uv run python scripts\record_monthly_decision_review.py --family qqq --status accepted --reviewer "Ian" --notes "Reviewed actual-primary divergence."
+```
+
+若你要刻意採用 research authority 而非 zero-breach actionable default，必須明確 override：
+
+```powershell
+python -m uv run python scripts\record_monthly_decision_review.py --family qqq --status override --selected-layer research_authority --reviewer "Ian" --notes "Explicitly accepting research-authority tail risk."
 ```
 
 重新跑 actual-primary 月度參考包：

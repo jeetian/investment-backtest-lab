@@ -42,6 +42,17 @@ COMPARISON_COLUMNS = [
     "replay_primary_expected_max_drawdown",
     "replay_primary_p05_max_drawdown",
     "replay_primary_drawdown_breach_rate",
+    "replay_primary_manual_review_required",
+    "actionable_default_scenario_id",
+    "actionable_default_scenario_label",
+    "actionable_default_replay_rank",
+    "actionable_default_eligible_for_monthly_signal",
+    "actionable_default_cohort_gate_passed",
+    "actionable_default_win_rate_vs_qqq_dca",
+    "actionable_default_expected_xirr",
+    "actionable_default_p05_xirr",
+    "actionable_default_drawdown_breach_rate",
+    "actionable_default_manual_review_required",
     "recommended_policy_source",
     "recommended_as_of_date",
     "recommended_scenario_id",
@@ -54,6 +65,7 @@ COMPARISON_COLUMNS = [
     "recommended_TQQQ_weight",
     "recommended_CASH_weight",
     "recommended_weight_sum",
+    "recommendation_layers_differ",
     "actual_disagrees_with_authority",
     "strategies_differ",
     "manual_review_required",
@@ -151,15 +163,25 @@ def build_monthly_decision_comparison(
     actual = monthly_decision.iloc[0]
     ranking = _sorted_replay_ranking(replay_ranking)
     authority = ranking.iloc[0]
-    recommended = _latest_actual_policy_for_authority(actual_policy, authority)
+    actionable = _actionable_default_candidate(ranking)
+    recommended = (
+        _latest_actual_policy_for_authority(actual_policy, actionable)
+        if actionable is not None
+        else None
+    )
 
     actual_disagrees = _policy_key(actual.get("scenario_id")) != _policy_key(
         authority.get("scenario_id")
+    )
+    layers_differ = (
+        actionable is None
+        or _policy_key(authority.get("scenario_id")) != _policy_key(actionable.get("scenario_id"))
     )
     recommended_row = _recommended_columns(recommended)
     reasons = _review_reasons(
         actual=actual,
         authority=authority,
+        actionable=actionable,
         recommended=recommended,
     )
     row = {
@@ -203,7 +225,12 @@ def build_monthly_decision_comparison(
         "replay_primary_drawdown_breach_rate": _safe_float(
             authority.get("drawdown_breach_rate")
         ),
+        "replay_primary_manual_review_required": _safe_bool(
+            authority.get("manual_review_required")
+        ),
+        **_actionable_default_columns(actionable),
         **recommended_row,
+        "recommendation_layers_differ": layers_differ,
         "actual_disagrees_with_authority": actual_disagrees,
         "strategies_differ": actual_disagrees,
         "manual_review_required": bool(reasons),
@@ -287,13 +314,19 @@ def render_monthly_decision_comparison_html(
     review = bool(row["manual_review_required"])
     disagree = bool(row["actual_disagrees_with_authority"])
     review_label = "Manual Review Required" if review else "Ready For Monthly Review"
+    layers_differ = bool(row["recommendation_layers_differ"])
     recommended_target = _format_leverage(row["recommended_target_effective_leverage"])
-    expected_xirr = _format_percent(row["replay_primary_expected_xirr"])
-    win_rate = _format_percent(row["replay_primary_win_rate_vs_qqq_dca"])
-    p05_xirr = _format_percent(row["replay_primary_p05_xirr"])
-    expected_drawdown = _format_percent(row["replay_primary_expected_max_drawdown"])
-    p05_drawdown = _format_percent(row["replay_primary_p05_max_drawdown"])
-    breach_rate = _format_percent(row["replay_primary_drawdown_breach_rate"])
+    research_expected_xirr = _format_percent(row["replay_primary_expected_xirr"])
+    research_win_rate = _format_percent(row["replay_primary_win_rate_vs_qqq_dca"])
+    research_p05_xirr = _format_percent(row["replay_primary_p05_xirr"])
+    research_drawdown = _format_percent(row["replay_primary_expected_max_drawdown"])
+    research_p05_drawdown = _format_percent(row["replay_primary_p05_max_drawdown"])
+    research_breach_rate = _format_percent(row["replay_primary_drawdown_breach_rate"])
+    research_review_required = escape(str(row["replay_primary_manual_review_required"]))
+    actionable_expected_xirr = _format_percent(row["actionable_default_expected_xirr"])
+    actionable_win_rate = _format_percent(row["actionable_default_win_rate_vs_qqq_dca"])
+    actionable_p05_xirr = _format_percent(row["actionable_default_p05_xirr"])
+    actionable_breach_rate = _format_percent(row["actionable_default_drawdown_breach_rate"])
     audit_files = _replay_audit_file_names(csv_path)
     eligible_badge = risk_badge(
         str(row["replay_primary_eligible_for_monthly_signal"]),
@@ -311,25 +344,27 @@ def render_monthly_decision_comparison_html(
   <section class="hero">
     <div class="panel">
       <p class="eyebrow">Monthly Decision Pack</p>
-      <h1>{escape(str(row["recommended_scenario_label"]) or "No Recommendation")}</h1>
+      <h1>{escape(str(row["recommended_scenario_label"]) or "No Actionable Default")}</h1>
       <p class="lede">
-        Official recommendation from hybrid-primary Monte Carlo ranking. Tradable weights use
-        the latest actual ETF policy state for the same policy key.
+        Research authority is the expected-XIRR top candidate. Actionable default is the
+        highest ranked zero-MC-breach candidate until an explicit human override is recorded.
       </p>
       <span class="pill {'danger' if review else 'ok'}">{escape(review_label)}</span>
+      <p><strong>Layers differ:</strong> {escape(str(layers_differ))}</p>
       <p><strong>Review reasons:</strong> {escape(str(row["review_reasons"]) or "None")}</p>
     </div>
     <div class="panel">
-      <p class="eyebrow">Tradable Weights</p>
+      <p class="eyebrow">Actionable Default Weights</p>
       <h2>{escape(str(row["recommended_as_of_date"]))}</h2>
       <p><strong>As of:</strong> {escape(str(row["recommended_as_of_date"]))}</p>
       <p><strong>Regime:</strong> {escape(str(row["recommended_regime"]))}</p>
       <p><strong>Reason:</strong> {escape(str(row["recommended_reason"]))}</p>
       <div class="kpis">
         <div class="kpi"><span>Target</span><strong>{recommended_target}</strong></div>
-        <div class="kpi"><span>Expected XIRR</span><strong>{expected_xirr}</strong></div>
-        <div class="kpi"><span>Win Rate</span><strong>{win_rate}</strong></div>
-        <div class="kpi"><span>P05 XIRR</span><strong>{p05_xirr}</strong></div>
+        <div class="kpi"><span>Expected XIRR</span><strong>{actionable_expected_xirr}</strong></div>
+        <div class="kpi"><span>Win Rate</span><strong>{actionable_win_rate}</strong></div>
+        <div class="kpi"><span>P05 XIRR</span><strong>{actionable_p05_xirr}</strong></div>
+        <div class="kpi"><span>MC Breach</span><strong>{actionable_breach_rate}</strong></div>
       </div>
       {_render_recommended_weight_cards(row)}
     </div>
@@ -337,17 +372,34 @@ def render_monthly_decision_comparison_html(
 
   <section class="two-col">
     <div class="panel">
-      <p class="eyebrow">Hybrid-Primary Authority</p>
+      <p class="eyebrow">Research Authority</p>
       <h2>{escape(str(row["replay_primary_scenario_label"]))}</h2>
       <p><strong>Authority:</strong> {escape(str(row["decision_authority"]))}</p>
       <p><strong>Eligible:</strong> {eligible_badge}</p>
       <p><strong>Cohort gate:</strong> {gate_badge}</p>
-      <p><strong>Expected XIRR:</strong> {expected_xirr}</p>
-      <p><strong>P05 XIRR:</strong> {p05_xirr}</p>
-      <p><strong>Expected drawdown:</strong> {expected_drawdown}</p>
-      <p><strong>P05 drawdown:</strong> {p05_drawdown}</p>
-      <p><strong>Drawdown breach rate:</strong> {breach_rate}</p>
+      <p><strong>Expected XIRR:</strong> {research_expected_xirr}</p>
+      <p><strong>Win rate:</strong> {research_win_rate}</p>
+      <p><strong>P05 XIRR:</strong> {research_p05_xirr}</p>
+      <p><strong>Expected drawdown:</strong> {research_drawdown}</p>
+      <p><strong>P05 drawdown:</strong> {research_p05_drawdown}</p>
+      <p><strong>Drawdown breach rate:</strong> {research_breach_rate}</p>
+      <p><strong>Requires review:</strong> {research_review_required}</p>
     </div>
+    <div class="panel">
+      <p class="eyebrow">Actionable Default</p>
+      <h2>{escape(str(row["actionable_default_scenario_label"]) or "No zero-breach candidate")}</h2>
+      <p>
+        This layer is the default before override. It requires cohort gate passed,
+        monthly eligibility, and zero Monte Carlo drawdown breach.
+      </p>
+      <p><strong>Replay rank:</strong> {escape(str(row["actionable_default_replay_rank"]))}</p>
+      <p><strong>Expected XIRR:</strong> {actionable_expected_xirr}</p>
+      <p><strong>P05 XIRR:</strong> {actionable_p05_xirr}</p>
+      <p><strong>Drawdown breach rate:</strong> {actionable_breach_rate}</p>
+    </div>
+  </section>
+
+  <section class="two-col">
     <div class="panel">
       <p class="eyebrow">Actual Primary Reference</p>
       <h2>{escape(str(row["actual_primary_scenario_label"]))}</h2>
@@ -402,6 +454,21 @@ def _sorted_replay_ranking(replay_ranking: pd.DataFrame) -> pd.DataFrame:
     if "replay_rank" not in replay_ranking.columns:
         raise ValueError("Replay ranking CSV must contain replay_rank.")
     return replay_ranking.sort_values("replay_rank").reset_index(drop=True)
+
+
+def _actionable_default_candidate(ranking: pd.DataFrame) -> pd.Series | None:
+    source = ranking[
+        ranking["eligible_for_monthly_signal"].map(_safe_bool)
+        & ranking["cohort_gate_passed"].map(_safe_bool)
+        & np.isclose(
+            ranking["drawdown_breach_rate"].map(_safe_float),
+            0.0,
+            atol=1e-12,
+        )
+    ]
+    if source.empty:
+        return None
+    return source.iloc[0]
 
 
 def _latest_actual_policy_for_authority(
@@ -479,6 +546,7 @@ def _top_candidates(replay_ranking: pd.DataFrame, *, top_n: int) -> pd.DataFrame
         "expected_max_drawdown",
         "p05_max_drawdown",
         "drawdown_breach_rate",
+        "manual_review_required",
     ]
     available = [column for column in columns if column in replay_ranking.columns]
     return replay_ranking.head(top_n)[available].copy()
@@ -488,6 +556,7 @@ def _review_reasons(
     *,
     actual: pd.Series,
     authority: pd.Series,
+    actionable: pd.Series | None,
     recommended: pd.Series | None,
 ) -> list[str]:
     reasons: list[str] = []
@@ -498,9 +567,11 @@ def _review_reasons(
     if not _safe_bool(authority.get("cohort_gate_passed")):
         reasons.append("Deterministic rolling cohort gate failed")
     if _safe_float(authority.get("drawdown_breach_rate"), default=1.0) > 0.0:
-        reasons.append("Monte Carlo replay has drawdown breach paths")
+        reasons.append("Research authority has Monte Carlo drawdown breach paths")
+    if actionable is None:
+        reasons.append("No zero-breach actionable default is available")
     if recommended is None:
-        reasons.append("Recommended policy has no latest actual ETF tradable weight row")
+        reasons.append("Actionable default has no latest actual ETF tradable weight row")
     else:
         weights = [_safe_float(recommended.get(column)) for column in WEIGHT_COLUMNS]
         if not np.isclose(np.nansum(weights), 1.0, atol=1e-6):
@@ -508,6 +579,44 @@ def _review_reasons(
         if _review_now_from_policy(recommended):
             reasons.append("Recommended actual ETF policy state is defensive/off and needs review")
     return reasons
+
+
+def _actionable_default_columns(actionable: pd.Series | None) -> dict[str, Any]:
+    if actionable is None:
+        return {
+            "actionable_default_scenario_id": "",
+            "actionable_default_scenario_label": "",
+            "actionable_default_replay_rank": np.nan,
+            "actionable_default_eligible_for_monthly_signal": False,
+            "actionable_default_cohort_gate_passed": False,
+            "actionable_default_win_rate_vs_qqq_dca": np.nan,
+            "actionable_default_expected_xirr": np.nan,
+            "actionable_default_p05_xirr": np.nan,
+            "actionable_default_drawdown_breach_rate": np.nan,
+            "actionable_default_manual_review_required": True,
+        }
+    return {
+        "actionable_default_scenario_id": actionable.get("scenario_id", ""),
+        "actionable_default_scenario_label": actionable.get("scenario_label", ""),
+        "actionable_default_replay_rank": int(_safe_float(actionable.get("replay_rank"), 0.0)),
+        "actionable_default_eligible_for_monthly_signal": _safe_bool(
+            actionable.get("eligible_for_monthly_signal")
+        ),
+        "actionable_default_cohort_gate_passed": _safe_bool(
+            actionable.get("cohort_gate_passed")
+        ),
+        "actionable_default_win_rate_vs_qqq_dca": _safe_float(
+            actionable.get("win_rate_vs_qqq_dca")
+        ),
+        "actionable_default_expected_xirr": _safe_float(actionable.get("expected_xirr")),
+        "actionable_default_p05_xirr": _safe_float(actionable.get("p05_xirr")),
+        "actionable_default_drawdown_breach_rate": _safe_float(
+            actionable.get("drawdown_breach_rate")
+        ),
+        "actionable_default_manual_review_required": _safe_bool(
+            actionable.get("manual_review_required")
+        ),
+    }
 
 
 def _review_now_from_policy(row: pd.Series) -> bool:
@@ -582,6 +691,7 @@ def _top_candidate_columns() -> list[tuple[str, str]]:
         ("expected_max_drawdown", "Expected DD"),
         ("p05_max_drawdown", "P05 DD"),
         ("drawdown_breach_rate", "Breach Rate"),
+        ("manual_review_required", "Review"),
     ]
 
 

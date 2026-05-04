@@ -5,6 +5,7 @@ from pathlib import Path
 
 from investment_backtest_lab.monthly_decision_review import (
     REVIEW_STATUSES,
+    SELECTED_LAYERS,
     write_monthly_decision_review_files,
 )
 
@@ -16,6 +17,7 @@ def main() -> None:
     parser.add_argument("--family", default="qqq")
     parser.add_argument("--output-dir", default="reports")
     parser.add_argument("--status", choices=REVIEW_STATUSES, default="pending_review")
+    parser.add_argument("--selected-layer", choices=SELECTED_LAYERS, default="actionable_default")
     parser.add_argument("--reviewer", default="")
     parser.add_argument("--notes", default="")
     args = parser.parse_args()
@@ -24,6 +26,7 @@ def main() -> None:
         output_dir=Path(args.output_dir),
         family=args.family.lower(),
         status=args.status,
+        selected_layer=args.selected_layer,
         reviewer=args.reviewer,
         notes=args.notes,
     )
@@ -32,6 +35,7 @@ def main() -> None:
     print(f"family:      {row['family']}")
     print(f"as_of:       {row['as_of_date']}")
     print(f"status:      {row['review_status']}")
+    print(f"layer:       {row['selected_layer']}")
     print(f"reviewer:    {row['reviewer'] or 'Unspecified'}")
     print(f"recommended: {row['recommended_scenario_label']}")
     print(

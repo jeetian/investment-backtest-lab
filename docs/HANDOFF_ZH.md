@@ -8,13 +8,16 @@
 - 月度正式 replay selector 已改成 `hybrid_primary`。
 - `hybrid_primary` 的資料邏輯是：ETF 上市後使用 actual ETF，上市前使用 scaled synthetic backfill。
 - 正式策略排名由 Monte Carlo replay 主導，deterministic rolling cohort 保留為硬風控 gate 與審計軌跡。
+- 月度報表採雙層語意：research authority 追求 expected XIRR，actionable default 要求 zero MC breach。
 - 目前最重要的結果入口是 `reports/monthly_decision_comparison_qqq.html`。
 
 ## 最新觀察結果
 
 - replay authority：`hybrid_primary_monte_carlo`
-- 正式推薦策略：`Vol Target 63D 25%`
-- latest actual ETF 可交易權重：`QQQ 73% / QLD 27% / TQQQ 0% / CASH 0%`
+- research authority：`Momentum+Trend 126D/200MA 3.0x to 1.0x`
+- actionable default：`Vol Target 63D 25%`
+- latest actual ETF actionable 權重：`QQQ 73% / QLD 27% / TQQQ 0% / CASH 0%`
+- research authority 有 MC breach，需要人工 override 才能採用；actionable default 是 zero-breach 預設。
 - actual-primary reference：`Momentum+Trend 126D/200MA 3.0x to 1.0x`
 - actual-primary reference 與 hybrid-primary authority 不同時，不視為錯誤；這代表參考訊號分歧，需要在一頁決策包中人工確認。
 
@@ -31,7 +34,7 @@ reports/monthly_decision_comparison_qqq.html
 - 正式推薦策略。
 - 可交易權重。
 - manual review 狀態與原因。
-- Hybrid-primary authority 與 actual-primary reference 的差異。
+- Research authority、actionable default 與 actual-primary reference 的差異。
 - MC risk 摘要：expected XIRR、p05 XIRR、win rate、drawdown breach rate、cohort gate。
 - source coverage：QQQ/QLD/TQQQ 哪段使用 actual，哪段使用 synthetic backfill。
 
@@ -42,6 +45,12 @@ python -m uv run python scripts\record_monthly_decision_review.py --family qqq -
 ```
 
 comparison HTML 是決策入口；review record 是人工確認留痕。它只記錄本月 review 狀態、reviewer、notes 與審計證據路徑，不會改變 ranking 或權重。
+
+若要採用有 MC breach 的 research authority，必須使用：
+
+```powershell
+python -m uv run python scripts\record_monthly_decision_review.py --family qqq --status override --selected-layer research_authority --reviewer "Ian"
+```
 
 日常可讀 CSV：
 

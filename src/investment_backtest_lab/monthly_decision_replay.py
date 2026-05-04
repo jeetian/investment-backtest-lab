@@ -422,13 +422,12 @@ def build_monte_carlo_replay_ranking(
     ranking = ranking.sort_values(
         [
             "eligible_for_monthly_signal",
-            "drawdown_breach_rate",
-            "win_rate_vs_qqq_dca",
             "expected_xirr",
+            "win_rate_vs_qqq_dca",
             "p05_xirr",
             "expected_max_drawdown",
         ],
-        ascending=[False, True, False, False, False, False],
+        ascending=[False, False, False, False, False],
     ).reset_index(drop=True)
     ranking["replay_rank"] = ranking.index + 1
     return ranking

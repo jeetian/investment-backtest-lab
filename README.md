@@ -79,7 +79,9 @@ python -m uv run python scripts\record_monthly_decision_review.py --family qqq -
 
 - 正式月度 authority：`hybrid_primary_monte_carlo`
 - `hybrid_primary` 上市後使用 actual ETF，上市前使用 scaled synthetic backfill。
-- Monte Carlo ranking 是正式主排名，expected XIRR 是主要 objective。
+- Monte Carlo ranking 是 research ranking，expected XIRR 是主要 objective。
+- Actionable default 是未人工 override 前的可行動層，只能使用 zero MC breach 且 cohort gate passed 的最高候選。
+- 目前 research authority 是 `Momentum+Trend 126D/200MA 3.0x to 1.0x`；actionable default 是 `Vol Target 63D 25%`。
 - deterministic rolling cohort gate 是硬風控 gate。
 - actual-primary monthly decision pack 保留為參考訊號；和 hybrid-primary authority 不同不代表錯誤，而是人工 review 要看的分歧。
 - review record 只記錄人工判斷，不會改變 ranking 或權重計算。

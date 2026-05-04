@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 REVIEW_STATUSES = ("pending_review", "accepted", "deferred", "rejected", "override")
+SELECTED_LAYERS = ("actionable_default", "research_authority")
 REVIEW_COLUMNS = [
     "generated_at",
     "family",
@@ -23,6 +24,7 @@ REVIEW_COLUMNS = [
     "actual_primary_scenario_label",
     "strategies_differ",
     "review_status",
+    "selected_layer",
     "reviewer",
     "review_notes",
     "comparison_html_path",
@@ -43,6 +45,7 @@ def write_monthly_decision_review_files(
     output_dir: Path,
     family: str,
     status: str = "pending_review",
+    selected_layer: str = "actionable_default",
     reviewer: str = "",
     notes: str = "",
     generated_at: str | None = None,
@@ -56,6 +59,7 @@ def write_monthly_decision_review_files(
         output_dir=output_dir,
         family=prefix,
         status=status,
+        selected_layer=selected_layer,
         reviewer=reviewer,
         notes=notes,
         generated_at=generated_at,
@@ -92,6 +96,7 @@ def build_monthly_decision_review_record(
     output_dir: Path,
     family: str,
     status: str = "pending_review",
+    selected_layer: str = "actionable_default",
     reviewer: str = "",
     notes: str = "",
     generated_at: str | None = None,
@@ -99,6 +104,14 @@ def build_monthly_decision_review_record(
     if status not in REVIEW_STATUSES:
         allowed = ", ".join(REVIEW_STATUSES)
         raise ValueError(f"review status must be one of {allowed}; got {status!r}.")
+    if selected_layer not in SELECTED_LAYERS:
+        allowed = ", ".join(SELECTED_LAYERS)
+        raise ValueError(f"selected layer must be one of {allowed}; got {selected_layer!r}.")
+    if selected_layer == "research_authority" and status != "override":
+        raise ValueError(
+            "research_authority can only be selected with review_status=override. "
+            "Use selected_layer=actionable_default for accepted, pending, deferred, or rejected."
+        )
     if comparison.empty:
         raise ValueError("Monthly decision review requires a non-empty comparison CSV.")
 
@@ -123,6 +136,7 @@ def build_monthly_decision_review_record(
         "actual_primary_scenario_label": row.get("actual_primary_scenario_label", ""),
         "strategies_differ": _safe_bool(row.get("strategies_differ")),
         "review_status": status,
+        "selected_layer": selected_layer,
         "reviewer": reviewer,
         "review_notes": notes,
         "comparison_html_path": str(output_dir / f"monthly_decision_comparison_{prefix}.html"),
@@ -147,20 +161,31 @@ def render_monthly_decision_review_markdown(review: pd.DataFrame) -> str:
     accepted_with_flags = (
         row["review_status"] == "accepted" and _safe_bool(row["manual_review_required"])
     )
+    override_research = (
+        row["review_status"] == "override" and row["selected_layer"] == "research_authority"
+    )
     warning = (
         "\n> WARNING: accepted despite review flags. "
         "Review reasons must be checked before acting on this record.\n"
         if accepted_with_flags
         else ""
     )
+    override_warning = (
+        "\n> OVERRIDE: research authority selected instead of the zero-breach actionable "
+        "default. This can include Monte Carlo drawdown breach risk.\n"
+        if override_research
+        else ""
+    )
     return f"""# Monthly Decision Review
 
 {warning}
+{override_warning}
 ## Decision
 
 - Family: `{row["family"]}`
 - As of date: `{row["as_of_date"]}`
 - Authority: `{row["decision_authority"]}`
+- Selected layer: `{row["selected_layer"]}`
 - Recommended strategy: `{row["recommended_scenario_label"]}`
 - Weights: {weights}
 
@@ -171,7 +196,7 @@ def render_monthly_decision_review_markdown(review: pd.DataFrame) -> str:
 - Manual review required: `{row["manual_review_required"]}`
 - Review reasons: {row["review_reasons"] or "None"}
 - Actual-primary reference: `{row["actual_primary_scenario_label"]}`
-- Strategies differ: `{row["strategies_differ"]}`
+- Actual-primary differs from research: `{row["strategies_differ"]}`
 - Notes: {row["review_notes"] or "None"}
 
 ## Evidence
@@ -215,6 +240,7 @@ def _format_percent(value: Any) -> str:
 __all__ = [
     "REVIEW_COLUMNS",
     "REVIEW_STATUSES",
+    "SELECTED_LAYERS",
     "MonthlyDecisionReviewResult",
     "build_monthly_decision_review_record",
     "load_monthly_decision_comparison_csv",

@@ -192,6 +192,36 @@ def test_monte_carlo_ranking_is_reproducible_and_cohort_gate_blocks_candidate():
     assert ranking.loc["hybrid_primary--dca-policy-good", "expected_xirr"] == pytest.approx(0.09)
 
 
+def test_monte_carlo_ranking_keeps_high_xirr_breach_candidate_as_research_top():
+    trials = pd.DataFrame(
+        [
+            mc_row("hybrid_primary--dca-policy-safe", 0.10, -0.40, win=True),
+            mc_row("hybrid_primary--dca-policy-safe", 0.08, -0.35, win=True),
+            mc_row("hybrid_primary--dca-policy-high-return", 0.40, -0.20, win=True),
+            mc_row("hybrid_primary--dca-policy-high-return", 0.35, -0.96, win=True),
+        ]
+    )
+    cohorts = pd.DataFrame(
+        [
+            cohort_row("hybrid_primary--dca-policy-safe", 0.09, -0.50, win=True),
+            cohort_row("hybrid_primary--dca-policy-high-return", 0.30, -0.70, win=True),
+        ]
+    )
+
+    ranking = build_monte_carlo_replay_ranking(
+        trials,
+        cohorts=cohorts,
+        selector=SELECTOR_HYBRID_PRIMARY,
+        config=MonthlyDecisionReplayConfig(),
+    )
+
+    top = ranking.iloc[0]
+    assert top["scenario_id"] == "hybrid_primary--dca-policy-high-return"
+    assert bool(top["eligible_for_monthly_signal"]) is True
+    assert bool(top["manual_review_required"]) is True
+    assert top["drawdown_breach_rate"] == pytest.approx(0.50)
+
+
 def cohort_row(
     scenario_id: str,
     xirr: float,

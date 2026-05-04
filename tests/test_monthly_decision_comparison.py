@@ -11,7 +11,7 @@ from investment_backtest_lab.monthly_decision_comparison import (
 )
 
 
-def test_comparison_uses_replay_authority_and_actual_policy_weights():
+def test_comparison_uses_research_authority_and_actionable_default_weights():
     outputs = build_monthly_decision_comparison(
         monthly_decision=sample_monthly_pack(manual_review_required=False, review_reasons=""),
         replay_ranking=sample_replay_ranking(),
@@ -23,10 +23,14 @@ def test_comparison_uses_replay_authority_and_actual_policy_weights():
 
     assert outputs.comparison.columns.tolist() == COMPARISON_COLUMNS
     assert row["decision_authority"] == "hybrid_primary_monte_carlo"
-    assert row["recommended_scenario_label"] == "Vol Target 63D 35%"
-    assert row["recommended_QLD_weight"] == 0.96
+    assert row["replay_primary_scenario_label"] == "Vol Target 63D 35%"
+    assert row["actionable_default_scenario_label"] == "Vol Target 63D 25%"
+    assert row["recommended_scenario_label"] == "Vol Target 63D 25%"
+    assert row["recommended_QLD_weight"] == 0.27
+    assert bool(row["recommendation_layers_differ"]) is True
     assert bool(row["actual_disagrees_with_authority"]) is True
-    assert bool(row["manual_review_required"]) is False
+    assert bool(row["manual_review_required"]) is True
+    assert "Research authority has Monte Carlo drawdown breach paths" in row["review_reasons"]
     assert outputs.top_candidates.iloc[0]["scenario_label"] == "Vol Target 63D 35%"
     assert outputs.source_coverage["ticker"].tolist() == ["QQQ", "QLD", "TQQQ"]
 
@@ -57,7 +61,26 @@ def test_comparison_requires_review_when_mc_breaches_drawdown():
     row = outputs.comparison.iloc[0]
 
     assert bool(row["manual_review_required"]) is True
-    assert "Monte Carlo replay has drawdown breach paths" in row["review_reasons"]
+    assert "Research authority has Monte Carlo drawdown breach paths" in row["review_reasons"]
+
+
+def test_comparison_requires_review_when_no_zero_breach_actionable_default():
+    ranking = sample_replay_ranking()
+    ranking["drawdown_breach_rate"] = 0.01
+    ranking["manual_review_required"] = True
+
+    outputs = build_monthly_decision_comparison(
+        monthly_decision=sample_monthly_pack(manual_review_required=False, review_reasons=""),
+        replay_ranking=ranking,
+        actual_policy=sample_actual_policy(),
+        generated_at="2026-05-04T00:00:00+00:00",
+    )
+    row = outputs.comparison.iloc[0]
+
+    assert row["recommended_policy_source"] == "missing_actual_etf_policy_state"
+    assert row["recommended_scenario_label"] == ""
+    assert bool(row["manual_review_required"]) is True
+    assert "No zero-breach actionable default is available" in row["review_reasons"]
 
 
 def test_comparison_report_writes_html_and_csv(tmp_path: Path):
@@ -77,14 +100,18 @@ def test_comparison_report_writes_html_and_csv(tmp_path: Path):
     assert result.html_path.exists()
     assert result.csv_path.exists()
     assert result.top_candidates_path.exists()
-    assert result.comparison["recommended_scenario_label"].iloc[0] == "Vol Target 63D 35%"
+    assert result.comparison["replay_primary_scenario_label"].iloc[0] == "Vol Target 63D 35%"
+    assert result.comparison["recommended_scenario_label"].iloc[0] == "Vol Target 63D 25%"
     assert result.source_coverage["ticker"].tolist() == ["QQQ", "QLD", "TQQQ"]
     html = result.html_path.read_text(encoding="utf-8")
     assert "Monthly Decision Pack" in html
-    assert "Tradable Weights" in html
+    assert "Research Authority" in html
+    assert "Actionable Default" in html
+    assert "Actionable Default Weights" in html
     assert "Source Coverage" in html
     assert "MC summary" in html
     assert "Vol Target 63D 35%" in html
+    assert "Vol Target 63D 25%" in html
     assert "Momentum+Trend 126D/200MA 3.0x to 1.0x" in html
     assert "2006-06-21" in html
 
@@ -152,14 +179,15 @@ def sample_replay_ranking() -> pd.DataFrame:
                 "p05_xirr": -0.0500,
                 "expected_max_drawdown": -0.5100,
                 "p05_max_drawdown": -0.7224,
-                "drawdown_breach_rate": 0.0,
+                "drawdown_breach_rate": 0.0001666667,
+                "manual_review_required": True,
             },
             {
                 "selector": "hybrid_primary",
                 "ranking_method": "monte_carlo",
                 "replay_rank": 2,
-                "scenario_id": "hybrid_primary--dca-policy-momentum-trend-126d-200ma-2p0-1p0",
-                "scenario_label": "Momentum+Trend 126D/200MA 2.0x to 1.0x",
+                "scenario_id": "hybrid_primary--dca-policy-vol-target-63d-25pct",
+                "scenario_label": "Vol Target 63D 25%",
                 "eligible_for_monthly_signal": True,
                 "cohort_gate_passed": True,
                 "win_rate_vs_qqq_dca": 0.9884,
@@ -169,6 +197,7 @@ def sample_replay_ranking() -> pd.DataFrame:
                 "expected_max_drawdown": -0.6000,
                 "p05_max_drawdown": -0.8931,
                 "drawdown_breach_rate": 0.0,
+                "manual_review_required": False,
             },
         ]
     )
@@ -177,6 +206,32 @@ def sample_replay_ranking() -> pd.DataFrame:
 def sample_actual_policy() -> pd.DataFrame:
     return pd.DataFrame(
         [
+            {
+                "date": "2025-12-29",
+                "data_mode": "actual_etf",
+                "scenario_id": "actual_etf--dca-policy-vol-target-63d-25pct",
+                "scenario_label": "Vol Target 63D 25%",
+                "regime": "vol_target",
+                "reason": "prior 63D realized volatility",
+                "target_effective_leverage": 1.27,
+                "QQQ_weight": 0.73,
+                "QLD_weight": 0.27,
+                "TQQQ_weight": 0.0,
+                "CASH_weight": 0.0,
+            },
+            {
+                "date": "2025-12-30",
+                "data_mode": "actual_etf",
+                "scenario_id": "actual_etf--dca-policy-vol-target-63d-25pct",
+                "scenario_label": "Vol Target 63D 25%",
+                "regime": "vol_target",
+                "reason": "prior 63D realized volatility",
+                "target_effective_leverage": 1.27,
+                "QQQ_weight": 0.73,
+                "QLD_weight": 0.27,
+                "TQQQ_weight": 0.0,
+                "CASH_weight": 0.0,
+            },
             {
                 "date": "2025-12-29",
                 "data_mode": "actual_etf",

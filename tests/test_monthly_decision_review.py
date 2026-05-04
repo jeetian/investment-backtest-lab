@@ -26,6 +26,7 @@ def test_monthly_review_writes_csv_and_markdown_with_default_status(tmp_path: Pa
     assert result.markdown_path.exists()
     assert result.review.columns.tolist() == REVIEW_COLUMNS
     assert row["review_status"] == "pending_review"
+    assert row["selected_layer"] == "actionable_default"
     assert row["reviewer"] == "Ian"
     assert row["recommended_scenario_label"] == "Vol Target 63D 35%"
     assert row["recommended_QLD_weight"] == 0.96
@@ -33,6 +34,7 @@ def test_monthly_review_writes_csv_and_markdown_with_default_status(tmp_path: Pa
     markdown = result.markdown_path.read_text(encoding="utf-8")
     assert "Monthly Decision Review" in markdown
     assert "pending_review" in markdown
+    assert "actionable_default" in markdown
     assert "Vol Target 63D 35%" in markdown
 
 
@@ -51,6 +53,35 @@ def test_monthly_review_accepts_with_review_flag_but_discloses_warning():
     assert review["review_status"].iloc[0] == "accepted"
     assert "accepted despite review flags" in markdown
     assert "Reviewed actual-primary divergence." in markdown
+
+
+def test_monthly_review_requires_override_for_research_authority_layer():
+    with pytest.raises(ValueError, match="research_authority can only be selected"):
+        build_monthly_decision_review_record(
+            comparison=sample_comparison(manual_review_required=True),
+            output_dir=Path("reports"),
+            family="qqq",
+            status="accepted",
+            selected_layer="research_authority",
+        )
+
+
+def test_monthly_review_override_research_authority_discloses_warning():
+    review = build_monthly_decision_review_record(
+        comparison=sample_comparison(manual_review_required=True),
+        output_dir=Path("reports"),
+        family="qqq",
+        status="override",
+        selected_layer="research_authority",
+        reviewer="Ian",
+        notes="Explicitly accepting higher tail risk.",
+        generated_at="2026-05-05T00:00:00+00:00",
+    )
+    markdown = render_monthly_decision_review_markdown(review)
+
+    assert review["selected_layer"].iloc[0] == "research_authority"
+    assert "OVERRIDE: research authority selected" in markdown
+    assert "Explicitly accepting higher tail risk." in markdown
 
 
 def test_monthly_review_raises_clear_error_when_comparison_missing(tmp_path: Path):

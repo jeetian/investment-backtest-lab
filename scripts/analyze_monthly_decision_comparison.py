@@ -55,6 +55,8 @@ def main() -> None:
     )
     print("Monthly Decision Comparison")
     print(f"authority:   {row['decision_authority']}")
+    print(f"research:    {row['replay_primary_scenario_label']}")
+    print(f"actionable:  {row['actionable_default_scenario_label']}")
     print(f"recommended: {row['recommended_scenario_label']}")
     print(
         "weights:     "
