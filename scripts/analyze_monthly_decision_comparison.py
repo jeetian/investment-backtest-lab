@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from investment_backtest_lab.config import load_backtest_config
+from investment_backtest_lab.monthly_decision_comparison import (
+    write_monthly_decision_comparison_report,
+)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Build the monthly decision authority and replay-primary comparison."
+    )
+    parser.add_argument("--config", default="configs/mvp_example.yaml")
+    parser.add_argument("--family", default="qqq")
+    parser.add_argument("--output-dir", default="reports")
+    parser.add_argument("--top-n", type=int, default=8)
+    args = parser.parse_args()
+
+    config = load_backtest_config(args.config)
+    family = args.family.lower()
+    if family != config.monthly_decision_pack.family:
+        raise ValueError(
+            f"Config monthly_decision_pack.family is {config.monthly_decision_pack.family!r}; "
+            f"got --family {family!r}."
+        )
+    if family != config.monthly_decision_replay.family:
+        raise ValueError(
+            f"Config monthly_decision_replay.family is {config.monthly_decision_replay.family!r}; "
+            f"got --family {family!r}."
+        )
+
+    result = write_monthly_decision_comparison_report(
+        output_dir=Path(args.output_dir),
+        family=family,
+        top_n=args.top_n,
+    )
+    row = result.comparison.iloc[0]
+    print("Monthly Decision Comparison")
+    print(f"authority:   {row['decision_authority']}")
+    print(f"recommended: {row['recommended_scenario_label']}")
+    print(
+        "weights:     "
+        f"QQQ {float(row['recommended_QQQ_weight']):.0%}, "
+        f"QLD {float(row['recommended_QLD_weight']):.0%}, "
+        f"TQQQ {float(row['recommended_TQQQ_weight']):.0%}, "
+        f"CASH {float(row['recommended_CASH_weight']):.0%}"
+    )
+    print(f"replay top:  {row['replay_primary_scenario_label']}")
+    print(f"actual ref:  {row['actual_primary_scenario_label']}")
+    print(f"disagrees:   {bool(row['actual_disagrees_with_authority'])}")
+    print(f"review:      {bool(row['manual_review_required'])}")
+    print(f"reasons:     {row['review_reasons'] or 'None'}")
+    print(f"HTML:        {result.html_path}")
+    print(f"CSV:         {result.csv_path}")
+    print(f"Top N:       {result.top_candidates_path}")
+
+
+if __name__ == "__main__":
+    main()

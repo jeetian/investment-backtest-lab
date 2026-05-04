@@ -36,10 +36,15 @@ def test_load_mvp_config():
     assert config.leveraged_etf_lab.synthetic_failure_drawdown == -0.85
     assert config.monthly_decision_replay.enabled is True
     assert config.monthly_decision_replay.family == "qqq"
-    assert config.monthly_decision_replay.selector == "synthetic_primary"
+    assert config.monthly_decision_replay.selector == "hybrid_primary"
     assert config.monthly_decision_replay.benchmark == "qqq_dca"
     assert config.monthly_decision_replay.horizons_years == (5, 10, 15, 20)
     assert config.monthly_decision_replay.initial_cash == 10_000
     assert config.monthly_decision_replay.monthly_contribution == 1_000
     assert config.monthly_decision_replay.max_drawdown_limit == -0.95
     assert config.monthly_decision_replay.min_win_rate == 0.50
+    assert config.monthly_decision_replay.monte_carlo_enabled is True
+    assert config.monthly_decision_replay.monte_carlo_seed == 20260504
+    assert config.monthly_decision_replay.monte_carlo_block_lengths_days == (63, 252, 504)
+    assert config.monthly_decision_replay.monte_carlo_fast_samples_per_scale == 100
+    assert config.monthly_decision_replay.monte_carlo_full_samples_per_scale == 500

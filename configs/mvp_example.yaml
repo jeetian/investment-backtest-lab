@@ -156,13 +156,18 @@ monthly_decision_pack:
 monthly_decision_replay:
   enabled: true
   family: qqq
-  selector: synthetic_primary
+  selector: hybrid_primary
   benchmark: qqq_dca
   horizons_years: [5, 10, 15, 20]
   initial_cash: 10000
   monthly_contribution: 1000
   max_drawdown_limit: -0.95
   min_win_rate: 0.50
+  monte_carlo_enabled: true
+  monte_carlo_seed: 20260504
+  monte_carlo_block_lengths_days: [63, 252, 504]
+  monte_carlo_fast_samples_per_scale: 100
+  monte_carlo_full_samples_per_scale: 500
 
 cost_model:
   tw:

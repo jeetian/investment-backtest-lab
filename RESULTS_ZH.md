@@ -1,0 +1,99 @@
+﻿# 結果入口
+
+專案位置：
+
+```text
+C:\Users\Ian Lai\Desktop\Python\investment-backtest-lab
+```
+
+報表位置：
+
+```text
+C:\Users\Ian Lai\Desktop\Python\investment-backtest-lab\reports
+```
+
+## 平常先看這個
+
+1. `reports\monthly_decision_comparison_qqq.html`
+   - 這是目前最重要的「一頁決策包」。
+   - 第一屏會直接回答：正式推薦策略、可交易權重、是否需要人工 review、review 原因。
+   - 正式決策來源是 `hybrid_primary` Monte Carlo ranking。
+   - 可交易權重來自同一策略在 latest actual ETF policy state 上的狀態。
+
+2. `reports\monthly_decision_comparison_qqq_top_candidates.csv`
+   - 日常檢查 top candidates 用。
+   - 比大型 MC trials 好讀很多。
+
+3. `reports\monthly_decision_replay_qqq_mc_summary.csv`
+   - Monte Carlo trials 的分層摘要。
+   - 日常查 expected XIRR、p05 XIRR、win rate、drawdown breach rate 時看這個。
+
+## 目前最新結果
+
+- 決策 authority：`hybrid_primary_monte_carlo`
+- 正式推薦策略：`Vol Target 63D 35%`
+- 最新 actual ETF 可交易權重：`QQQ 4% / QLD 96% / TQQQ 0% / CASH 0%`
+- actual-primary 參考策略：`Momentum+Trend 126D/200MA 3.0x to 1.0x`
+- actual-primary 與 hybrid-primary 不同不是程式錯誤，而是參考訊號分歧。正式推薦以 hybrid-primary authority 為主，差異留給人工 review。
+
+## 大型審計檔
+
+平常不需要直接打開這些檔：
+
+- `reports\monthly_decision_replay_qqq_mc_trials.csv.gz`
+  - 完整 Monte Carlo trials 壓縮審計檔。
+  - full replay 原始 CSV 約 302 MB，已改成 gzip 輸出，避免日常誤開。
+
+- `reports\monthly_decision_replay_qqq_cohorts.csv`
+  - deterministic rolling cohort gate 的明細。
+  - 用來審計 cohort gate，不是日常決策入口。
+
+- `reports\dca_policy_optimizer_qqq_policy.csv`
+  - 每日 policy state 明細，檔案可能很大。
+  - 只有追查某一天權重來源時才需要看。
+
+## 常用命令
+
+先進專案資料夾：
+
+```powershell
+cd "C:\Users\Ian Lai\Desktop\Python\investment-backtest-lab"
+```
+
+重新產生一頁決策包：
+
+```powershell
+python -m uv run python scripts\analyze_monthly_decision_comparison.py --config configs\mvp_example.yaml --family qqq
+```
+
+重新跑 actual-primary 月度參考包：
+
+```powershell
+python -m uv run python scripts\analyze_monthly_decision_pack.py --config configs\mvp_example.yaml --family qqq
+```
+
+重新跑 hybrid-primary replay fast 版：
+
+```powershell
+python -m uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_example.yaml --family qqq --selector hybrid_primary --fast
+```
+
+重新跑 hybrid-primary replay full 版：
+
+```powershell
+python -m uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_example.yaml --family qqq --selector hybrid_primary --full
+```
+
+驗證：
+
+```powershell
+python -m uv run ruff check src tests scripts
+python -m uv run pytest --basetemp=C:\Users\Ian Lai\Desktop\Python\pytest-fresh-20260505
+```
+
+## Runtime
+
+- `hybrid_primary --fast`：約 10 分鐘。
+- `hybrid_primary --full`：目前觀察約 49 分鐘。
+- 主要瓶頸是 deterministic rolling cohort gate，不是 Monte Carlo 抽樣本身。
+- CLI 會印開始時間、selector、scan mode、horizons、coverage、重要階段進度、總耗時與輸出檔案。完整 replay 完成後，結果才適合拿來做人工決策檢查。

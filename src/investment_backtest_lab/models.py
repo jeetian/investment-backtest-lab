@@ -400,13 +400,18 @@ class MonthlyDecisionPackConfig:
 class MonthlyDecisionReplayConfig:
     enabled: bool = True
     family: str = "qqq"
-    selector: str = "synthetic_primary"
+    selector: str = "hybrid_primary"
     benchmark: str = "qqq_dca"
     horizons_years: tuple[int, ...] = (5, 10, 15, 20)
     initial_cash: float = 10_000.0
     monthly_contribution: float = 1_000.0
     max_drawdown_limit: float = -0.95
     min_win_rate: float = 0.50
+    monte_carlo_enabled: bool = True
+    monte_carlo_seed: int = 20260504
+    monte_carlo_block_lengths_days: tuple[int, ...] = (63, 252, 504)
+    monte_carlo_fast_samples_per_scale: int = 100
+    monte_carlo_full_samples_per_scale: int = 500
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> MonthlyDecisionReplayConfig:
@@ -414,7 +419,7 @@ class MonthlyDecisionReplayConfig:
         return cls(
             enabled=bool(data.get("enabled", True)),
             family=str(data.get("family", "qqq")).lower(),
-            selector=str(data.get("selector", "synthetic_primary")).lower(),
+            selector=str(data.get("selector", "hybrid_primary")).lower(),
             benchmark=str(data.get("benchmark", "qqq_dca")).lower(),
             horizons_years=tuple(
                 int(value) for value in data.get("horizons_years", [5, 10, 15, 20])
@@ -423,6 +428,18 @@ class MonthlyDecisionReplayConfig:
             monthly_contribution=float(data.get("monthly_contribution", 1_000.0)),
             max_drawdown_limit=float(data.get("max_drawdown_limit", -0.95)),
             min_win_rate=float(data.get("min_win_rate", 0.50)),
+            monte_carlo_enabled=bool(data.get("monte_carlo_enabled", True)),
+            monte_carlo_seed=int(data.get("monte_carlo_seed", 20260504)),
+            monte_carlo_block_lengths_days=tuple(
+                int(value)
+                for value in data.get("monte_carlo_block_lengths_days", [63, 252, 504])
+            ),
+            monte_carlo_fast_samples_per_scale=int(
+                data.get("monte_carlo_fast_samples_per_scale", 100)
+            ),
+            monte_carlo_full_samples_per_scale=int(
+                data.get("monte_carlo_full_samples_per_scale", 500)
+            ),
         )
 
 

@@ -1,4 +1,4 @@
-# 快速上手
+﻿# 快速上手
 
 這份專案目前最重要的主線是 QQQ family（QQQ / QLD / TQQQ / CASH）的 DCA
 槓桿 ETF 策略研究。報表只提供研究訊號，不是投資建議，也不會自動下單。
@@ -18,6 +18,14 @@ uv sync --extra dev
 uv run pytest
 uv run python scripts\smoke_imports.py
 uv run python scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
+```
+
+如果 Windows 舊的 pytest 暫存資料夾 ACL 被污染，`uv run pytest` 可能在 `tmp_path`
+建立階段出現 `PermissionError [WinError 5]`。這不是測試邏輯失敗，可改用新的
+basetemp：
+
+```powershell
+uv run pytest --basetemp=C:\Users\Ian Lai\Desktop\Python\pytest-fresh-20260504
 ```
 
 ## 2. 一般 SPY / QQQ 報表
@@ -88,10 +96,10 @@ synthetic stress 用來淘汰或警示。打開這頁先看：
 - 上期與本期配置差異。
 - 下一次月度調整日與週度監控日。
 
-## 6. Synthetic-Primary Monthly Replay
+## 6. Hybrid-Primary Monthly Replay
 
 ```powershell
-uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_example.yaml --family qqq --selector synthetic_primary
+uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_example.yaml --family qqq --selector hybrid_primary --fast
 ```
 
 主要輸出：
@@ -106,7 +114,28 @@ uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_ex
 排序重點是 win rate、drawdown breach rate、worst drawdown 與 replay score，
 不是 ending equity 或單一全期間 XIRR。
 
-## 7. FinMind Token
+完整 replay 會跑 configured horizons（目前是 5、10、15、20 年），在 Windows 筆電上
+跑約 10 分鐘是可接受的正常範圍。請等 CLI 印出完成耗時與輸出檔案後，再拿結果做人工
+決策檢查。
+
+## 7. Monthly Decision Comparison
+
+在 Monthly Decision Pack 與 Hybrid-Primary Replay 都產生後，執行：
+
+```powershell
+uv run python scripts\analyze_monthly_decision_comparison.py --config configs\mvp_example.yaml --family qqq
+```
+
+主要輸出：
+
+- `reports/monthly_decision_comparison_qqq.html`
+- `reports/monthly_decision_comparison_qqq.csv`
+- `reports/monthly_decision_comparison_qqq_top_candidates.csv`
+
+這份報表會並排比較 actual-primary 參考流程與 hybrid-primary replay authority，並明確標示
+兩者是否選出不同策略、是否需要人工 review。策略不同時不要自動切換，先看差異與風險。
+
+## 8. FinMind Token
 
 台股資料需要 FinMind token：
 

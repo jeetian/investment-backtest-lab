@@ -1,4 +1,4 @@
-# 月度配置工作流
+﻿# 月度配置工作流
 
 這份工具的目標是提供研究訊號，幫助人工決策 ETF / 基金配置。它不自動下單，
 不串券商，也不保證未來績效。
@@ -48,12 +48,12 @@ reports/dca_policy_optimizer_qqq.html
 - Cohort Robustness。
 - signal explainability CSV。
 
-## Synthetic-Primary 對照流程
+## Hybrid-Primary 正式 Replay 流程
 
-如果你想讓壓測結果成為優先排序來源，請額外執行：
+正式月度 replay 使用 hybrid-primary：actual ETF 上市後用 actual，上市前用 scaled synthetic backfill。
 
 ```powershell
-uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_example.yaml --family qqq --selector synthetic_primary
+uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_example.yaml --family qqq --selector hybrid_primary --fast
 ```
 
 輸出：
@@ -62,16 +62,41 @@ uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_ex
 reports/monthly_decision_replay_qqq.html
 ```
 
-這份報表用 synthetic stress ranking 和 rolling cohort replay 來評估每月決策流程。
-它會比較策略是否在不同起點與終點下打敗 `QQQ DCA` benchmark，並檢查是否跌破
+這份報表用 Monte Carlo ranking 作主排序，並用 rolling cohort replay 作硬風控 gate。
+它會比較策略是否在抽樣路徑與不同起點終點下打敗 `QQQ DCA` benchmark，並檢查是否跌破
 `-95%` 最大回撤硬線。
+
+完整 replay 會跑 configured horizons（目前是 5、10、15、20 年），約 10 分鐘 runtime
+屬正常範圍。CLI 會列出開始時間、selector、scan mode、horizons、主要階段進度與總耗時；
+等它印出輸出檔案後，再使用結果做人工決策檢查。
 
 目前兩份報表的定位不同：
 
 - `monthly_decision_pack_qqq.html`：actual-primary 主流程，適合每月例行閱讀。
-- `monthly_decision_replay_qqq.html`：synthetic-primary 壓測對照，適合檢查極端市場穩健性。
+- `monthly_decision_replay_qqq.html`：hybrid-primary replay，適合檢查正式 replay authority。
 
-在 synthetic-primary 邏輯正式成熟前，它不會自動覆蓋原本的 Monthly Decision Pack。
+hybrid-primary 現在是 replay authority；Monthly Decision Pack 保留作 actual-primary 參考流程。
+
+## 雙軌比較流程
+
+當 `monthly_decision_pack_qqq.html` 與 `monthly_decision_replay_qqq.html` 都產生後，執行：
+
+```powershell
+uv run python scripts\analyze_monthly_decision_comparison.py --config configs\mvp_example.yaml --family qqq
+```
+
+輸出：
+
+```text
+reports/monthly_decision_comparison_qqq.html
+reports/monthly_decision_comparison_qqq.csv
+reports/monthly_decision_comparison_qqq_top_candidates.csv
+```
+
+這份 comparison report 是每月人工 review 的主要入口。它會把 actual-primary 參考配置與
+hybrid-primary top candidates 並排，標示兩者策略是否不同，以及差異是否需要人工檢查。
+若兩條流程結論不同，正式策略以 hybrid-primary replay authority 為準；再用 comparison report
+檢查 win rate、worst drawdown、drawdown breach rate 與原本 monthly pack 的 review reasons。
 
 ## 每週流程
 

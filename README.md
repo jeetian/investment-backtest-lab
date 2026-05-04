@@ -1,87 +1,114 @@
-# Investment Backtest Lab
+﻿# Investment Backtest Lab
 
-這是一個個人投資回測研究實驗室，目標是用可審計的資料、策略與報表，研究美股 ETF、台股、台灣 ETF 與台灣基金的長期投資配置。
+Investment Backtest Lab 是一個投資回測研究專案，目前重點是 QQQ/QLD/TQQQ/CASH 的 DCA policy optimizer、monthly decision pack，以及 hybrid-primary Monte Carlo replay。
 
-目前專案重點已進入美股 ETF 研究：一般 ledger、margin loan 槓桿、槓桿 ETF product，以及 QQQ/QLD/TQQQ 的 DCA policy optimizer。工具輸出的是研究訊號，不是投資建議，也不會自動下單。
-
-## 最快路線
+## 快速開始
 
 ```powershell
-uv sync --extra dev
-uv run pytest
-uv run python scripts\smoke_imports.py
-uv run python scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
+python -m uv sync --extra dev
+python -m uv run pytest
+python -m uv run python scripts\smoke_imports.py
 ```
 
-看 SPY/QQQ ledger 報表：
+Python 需求是 `>=3.12,<3.13`，依賴由 `uv.lock` 鎖定。
+
+Windows pytest 若遇到 temp ACL 問題，可使用 fresh basetemp：
 
 ```powershell
-uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+python -m uv run pytest --basetemp=C:\Users\Ian Lai\Desktop\Python\pytest-fresh-20260505
 ```
 
-看 QQQ/QLD/TQQQ 槓桿 ETF product lab：
+## 主要月度流程
+
+先產生 actual ETF policy 與 cohort gate：
 
 ```powershell
-uv run python scripts\analyze_leveraged_etf_lab.py --config configs\mvp_example.yaml --family qqq --cash-flow-mode both
+python -m uv run python scripts\analyze_dca_policy_optimizer.py --config configs\mvp_example.yaml --family qqq --scan-mode fast --cohort-validation
 ```
 
-看 DCA policy optimizer 與月度配置研究訊號：
+產生 actual-primary 參考月度包：
 
 ```powershell
-uv run python scripts\analyze_dca_policy_optimizer.py --config configs\mvp_example.yaml --family qqq --scan-mode fast --cohort-validation
+python -m uv run python scripts\analyze_monthly_decision_pack.py --config configs\mvp_example.yaml --family qqq
 ```
 
-主要輸出：
+產生 hybrid-primary replay：
 
-- `reports/ledger_spy_qqq.html`
-- `reports/leverage_spy_qqq.html`
-- `reports/leveraged_etf_qqq.html`
-- `reports/dca_policy_optimizer_qqq.html`
+```powershell
+python -m uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_example.yaml --family qqq --selector hybrid_primary --fast
+```
 
-## 專案方向
+正式 full replay：
 
-長期文件請先讀：
+```powershell
+python -m uv run python scripts\analyze_monthly_decision_replay.py --config configs\mvp_example.yaml --family qqq --selector hybrid_primary --full
+```
+
+產生一頁決策包：
+
+```powershell
+python -m uv run python scripts\analyze_monthly_decision_comparison.py --config configs\mvp_example.yaml --family qqq
+```
+
+## 最重要的輸出
+
+日常先看：
+
+- `reports/monthly_decision_comparison_qqq.html`：一頁決策包，顯示正式推薦策略、可交易權重、review 狀態、MC 風控摘要與 source coverage。
+- `reports/monthly_decision_comparison_qqq_top_candidates.csv`：top candidates 摘要。
+- `reports/monthly_decision_replay_qqq_mc_summary.csv`：Monte Carlo trials 分層摘要。
+
+深度審計才看：
+
+- `reports/monthly_decision_replay_qqq_mc_trials.csv.gz`：完整 Monte Carlo trials 壓縮檔。
+- `reports/monthly_decision_replay_qqq_cohorts.csv`：deterministic rolling cohort gate 明細。
+- `reports/dca_policy_optimizer_qqq_policy.csv`：每日 actual ETF policy state。
+
+## 目前決策語意
+
+- 正式月度 authority：`hybrid_primary_monte_carlo`
+- `hybrid_primary` 上市後使用 actual ETF，上市前使用 scaled synthetic backfill。
+- Monte Carlo ranking 是正式主排名，expected XIRR 是主要 objective。
+- deterministic rolling cohort gate 是硬風控 gate。
+- actual-primary monthly decision pack 保留為參考訊號；和 hybrid-primary authority 不同不代表錯誤，而是人工 review 要看的分歧。
+
+## Runtime
+
+- `hybrid_primary --fast` 約 10 分鐘。
+- `hybrid_primary --full` 目前觀察約 49 分鐘。
+- 主要瓶頸在 deterministic rolling cohort gate。
+- CLI 會印出開始時間、selector、scan mode、horizons、coverage、階段進度、總耗時與輸出檔案。
+
+## 其他研究入口
+
+```powershell
+python -m uv run python scripts\run_prototype.py --config configs\mvp_example.yaml --offline-demo
+python -m uv run python scripts\analyze_ledger.py --config configs\mvp_example.yaml --tickers SPY QQQ
+python -m uv run python scripts\analyze_leveraged_etf_lab.py --config configs\mvp_example.yaml --family qqq --cash-flow-mode both
+```
+
+更多接手說明：
+
+- `RESULTS_ZH.md`
+- `docs/HANDOFF_ZH.md`
+- `docs/QUICKSTART_ZH.md`
+- `docs/ALLOCATION_WORKFLOW_ZH.md`
+- `docs/ROADMAP_ZH.md`
+
+長期方向文件：
 
 - [專案範圍](docs/PROJECT_SCOPE_ZH.md)
 - [Roadmap](docs/ROADMAP_ZH.md)
-- [策略研究計畫](docs/STRATEGY_RESEARCH_PLAN_ZH.md)
-- [月度配置工作流](docs/ALLOCATION_WORKFLOW_ZH.md)
 - [驗證策略](docs/VALIDATION_STRATEGY_ZH.md)
 - [框架維護規範](docs/FRAMEWORK_HYGIENE_ZH.md)
-
-目前優先順序：
-
-1. 美股 ETF 的資料、股息、成本、稅與 ledger 正確性。
-2. QQQ/QLD/TQQQ 的 DCA 槓桿策略研究。
-3. Walk-forward、rolling cohort、synthetic stress 的防過擬合驗證。
-4. 每月配置研究訊號與每週風險監控。
-5. 之後再擴充 Optuna 搜尋、SPY/SSO/UPRO、台股、台灣 ETF 與台灣基金。
-
-## 重要原則
-
-- 研究級正確性優先於漂亮 UI。
-- `AccountLedger`、`PortfolioLedger`、`MarginLoanLedger` 是可審計主線。
-- `vectorbt`、`bt` 用於研究、掃描與 cross-tool validation，不直接取代 ledger audit trail。
-- margin loan 和 leveraged ETF product 必須分開建模。
-- Optuna 未來只作搜尋加速，不得取代 walk-forward、cohort validation 與 synthetic stress。
-- 本專案不做自動交易、不串券商、不提供投資建議。
-
-## 常用驗證
-
-```powershell
-uv run pytest
-uv run ruff check src tests scripts
-uv run python scripts\cross_validate.py
-uv run python scripts\analyze_dca_policy_optimizer.py --config configs\mvp_example.yaml --family qqq --scan-mode fast --cohort-validation
-```
+- [策略研究計畫](docs/STRATEGY_RESEARCH_PLAN_ZH.md)
+- [月度配置工作流](docs/ALLOCATION_WORKFLOW_ZH.md)
 
 ## FinMind Token
 
-台股與台灣 ETF live data 需要 FinMind token，請只用環境變數，不要寫入設定檔：
+不要把 token 寫入檔案。需要 live data 時，只在目前 shell 設定：
 
 ```powershell
 $env:FINMIND_TOKEN = "你的 token"
-uv run python scripts\smoke_data.py --network
+python -m uv run python scripts\smoke_data.py --network
 ```
-
-沒有 token 時，美股與離線測試仍可正常執行。

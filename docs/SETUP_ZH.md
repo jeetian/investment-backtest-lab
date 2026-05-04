@@ -1,4 +1,4 @@
-# 環境設定指南
+﻿# 環境設定指南
 
 這份文件記錄 Windows 上建立本專案研究環境的標準流程。
 
@@ -93,3 +93,18 @@ uv sync --extra dev
 ### Matplotlib cache 權限問題
 
 `scripts/smoke_imports.py` 已把 `MPLCONFIGDIR` 指到專案內 `.cache/matplotlib`，正常情況下不需要手動處理。
+
+### Windows pytest 暫存資料夾權限問題
+
+如果曾經用不同權限層級執行 pytest，Windows 可能留下無法讀取的
+`%TEMP%\pytest-of-<user>` 資料夾。症狀是測試在 `tmp_path` setup 階段出現
+`PermissionError [WinError 5]`，但多數測試本身沒有 assertion failure。
+
+可用 fresh basetemp 避開舊 ACL：
+
+```powershell
+uv run pytest --basetemp=C:\Users\Ian Lai\Desktop\Python\pytest-fresh-20260504
+```
+
+若要清理舊資料夾，請用 Windows 檔案總管或系統管理員 PowerShell 檢查 ACL 後再刪除；
+不要把 pytest 暫存資料夾加入 git。
