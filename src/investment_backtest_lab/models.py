@@ -17,6 +17,7 @@ class Market(StrEnum):
 class AssetType(StrEnum):
     STOCK = "stock"
     ETF = "etf"
+    INDEX = "index"
     MUTUAL_FUND = "mutual_fund"
     FX = "fx"
 
@@ -444,6 +445,66 @@ class MonthlyDecisionReplayConfig:
 
 
 @dataclass(frozen=True)
+class StrategySearchConfig:
+    enabled: bool = True
+    family: str = "tw50"
+    engine: str = "optuna"
+    benchmark: str = "base_dca"
+    n_trials: int = 1_000
+    sampler_seed: int = 20260504
+    storage_path: str = "reports/optuna_tw50_v1.db"
+    objective_mode: str = "pareto"
+    objective_profile: str = "pareto"
+    drawdown_limit_mode: str = "base_1x_stress_multiplier"
+    drawdown_limit_multiplier: float = 1.20
+    include_sentiment: bool = True
+    sentiment_path: str = "data/external/fear_greed.csv"
+    include_external_signals: bool = False
+    external_signal_feature_set: str = "all"
+    external_signals_path: str = "data/external/market_regime_features_tw50.csv"
+    execution_profile: str = "flexible_execution"
+    execution_cadence: str = "flexible"
+    contribution_cadence: str = "monthly"
+    final_holdout_start: str = "2019-01-01"
+    final_holdout_end: str = "2026-04-30"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> StrategySearchConfig:
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            family=str(data.get("family", "tw50")).lower(),
+            engine=str(data.get("engine", "optuna")).lower(),
+            benchmark=str(data.get("benchmark", "base_dca")).lower(),
+            n_trials=int(data.get("n_trials", 1_000)),
+            sampler_seed=int(data.get("sampler_seed", 20260504)),
+            storage_path=str(data.get("storage_path", "reports/optuna_tw50_v1.db")),
+            objective_mode=str(data.get("objective_mode", "pareto")).lower(),
+            objective_profile=str(
+                data.get("objective_profile", data.get("objective_mode", "pareto"))
+            ).lower(),
+            drawdown_limit_mode=str(
+                data.get("drawdown_limit_mode", "base_1x_stress_multiplier")
+            ).lower(),
+            drawdown_limit_multiplier=float(data.get("drawdown_limit_multiplier", 1.20)),
+            include_sentiment=bool(data.get("include_sentiment", True)),
+            sentiment_path=str(data.get("sentiment_path", "data/external/fear_greed.csv")),
+            include_external_signals=bool(data.get("include_external_signals", False)),
+            external_signal_feature_set=str(
+                data.get("external_signal_feature_set", "all")
+            ).lower().replace("-", "_"),
+            external_signals_path=str(
+                data.get("external_signals_path", "data/external/market_regime_features_tw50.csv")
+            ),
+            execution_profile=str(data.get("execution_profile", "flexible_execution")).lower(),
+            execution_cadence=str(data.get("execution_cadence", "flexible")).lower(),
+            contribution_cadence=str(data.get("contribution_cadence", "monthly")).lower(),
+            final_holdout_start=str(data.get("final_holdout_start", "2019-01-01")),
+            final_holdout_end=str(data.get("final_holdout_end", "2026-04-30")),
+        )
+
+
+@dataclass(frozen=True)
 class BacktestConfig:
     universe: list[AssetSpec]
     start_date: date
@@ -469,6 +530,7 @@ class BacktestConfig:
     monthly_decision_replay: MonthlyDecisionReplayConfig = field(
         default_factory=MonthlyDecisionReplayConfig
     )
+    strategy_search: StrategySearchConfig = field(default_factory=StrategySearchConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BacktestConfig:
@@ -497,6 +559,7 @@ class BacktestConfig:
             monthly_decision_replay=MonthlyDecisionReplayConfig.from_dict(
                 data.get("monthly_decision_replay")
             ),
+            strategy_search=StrategySearchConfig.from_dict(data.get("strategy_search")),
         )
 
 

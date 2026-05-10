@@ -37,17 +37,27 @@ def main() -> None:
     print(f"strategy:  {signal['scenario_label']}")
     print(f"regime:    {signal['regime']}")
     print(f"target:    {float(signal['target_effective_leverage']):.2f}x")
-    print(
-        "weights:   "
-        f"QQQ {float(signal.get('QQQ_weight', 0.0)):.0%}, "
-        f"QLD {float(signal.get('QLD_weight', 0.0)):.0%}, "
-        f"TQQQ {float(signal.get('TQQQ_weight', 0.0)):.0%}, "
-        f"CASH {float(signal.get('CASH_weight', 0.0)):.0%}"
-    )
+    print(f"weights:   {format_weight_summary(signal)}")
     print(f"review:    {bool(signal['manual_review_required'])}")
     print(f"HTML:      {result.html_path}")
     print(f"CSV:       {result.csv_path}")
     print(f"History:   {result.history_path}")
+
+
+def format_weight_summary(row) -> str:
+    parts = []
+    for column in row.index:
+        if (
+            str(column).endswith("_weight")
+            and str(column) != "cash_weight"
+            and not str(column).startswith("previous_")
+        ):
+            ticker = str(column).removesuffix("_weight")
+            value = row.get(column, 0.0)
+            if value == "":
+                continue
+            parts.append(f"{ticker} {float(value):.0%}")
+    return ", ".join(parts)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -30,12 +31,16 @@ def test_monthly_review_writes_csv_and_markdown_with_default_status(tmp_path: Pa
     assert row["reviewer"] == "Ian"
     assert row["recommended_scenario_label"] == "Vol Target 63D 35%"
     assert row["recommended_QLD_weight"] == 0.96
+    assert row["recommended_cost_mode"] == "net_of_cost"
+    assert row["recommended_total_trade_cost"] == pytest.approx(1234.56)
+    assert row["recommended_cost_drag_on_contributed"] == pytest.approx(0.0123)
     assert row["comparison_html_path"].endswith("monthly_decision_comparison_qqq.html")
     markdown = result.markdown_path.read_text(encoding="utf-8")
     assert "Monthly Decision Review" in markdown
     assert "pending_review" in markdown
     assert "actionable_default" in markdown
     assert "Vol Target 63D 35%" in markdown
+    assert "Cost mode" in markdown
 
 
 def test_monthly_review_accepts_with_review_flag_but_discloses_warning():
@@ -89,6 +94,30 @@ def test_monthly_review_raises_clear_error_when_comparison_missing(tmp_path: Pat
         write_monthly_decision_review_files(output_dir=tmp_path, family="qqq")
 
 
+def test_monthly_review_preserves_dynamic_weights_json():
+    comparison = sample_comparison(manual_review_required=False)
+    comparison["recommended_weights_json"] = json.dumps(
+        {"0050": 0.6, "00631L": 0.4, "CASH": 0.0},
+        sort_keys=True,
+    )
+
+    review = build_monthly_decision_review_record(
+        comparison=comparison,
+        output_dir=Path("reports"),
+        family="tw50",
+        status="pending_review",
+    )
+    markdown = render_monthly_decision_review_markdown(review)
+
+    assert json.loads(review["recommended_weights_json"].iloc[0]) == {
+        "0050": 0.6,
+        "00631L": 0.4,
+        "CASH": 0.0,
+    }
+    assert "0050 60%" in markdown
+    assert "00631L 40%" in markdown
+
+
 def test_monthly_review_rejects_unknown_status():
     with pytest.raises(ValueError, match="review status must be one of"):
         build_monthly_decision_review_record(
@@ -115,6 +144,10 @@ def sample_comparison(*, manual_review_required: bool = True) -> pd.DataFrame:
                 "recommended_QLD_weight": 0.96,
                 "recommended_TQQQ_weight": 0.0,
                 "recommended_CASH_weight": 0.0,
+                "actionable_default_cost_mode": "net_of_cost",
+                "actionable_default_total_trade_cost": 1234.56,
+                "actionable_default_cost_drag_on_contributed": 0.0123,
+                "actionable_default_turnover_sum": 32.1,
                 "manual_review_required": manual_review_required,
                 "review_reasons": (
                     "Actual-primary reference pack requires review"

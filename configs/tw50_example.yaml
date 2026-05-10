@@ -1,0 +1,191 @@
+base_currency: TWD
+start_date: "1999-03-10"
+end_date: "2026-05-09" # End-exclusive cutoff; target decision as-of is 2026-05-08.
+benchmark: "0050"
+
+universe:
+  - ticker: "^TWII"
+    name: TAIEX Price Index
+    market: TW
+    asset_type: index
+    currency: TWD
+    data_source: yfinance
+  - ticker: "0050"
+    name: Yuanta Taiwan 50 ETF
+    market: TW
+    asset_type: etf
+    currency: TWD
+    data_source: finmind
+  - ticker: "00631L"
+    name: Yuanta Daily Taiwan 50 Bull 2X ETF
+    market: TW
+    asset_type: etf
+    currency: TWD
+    data_source: finmind
+
+strategy:
+  name: moving_average_timing
+  params:
+    fast_window: 50
+    slow_window: 200
+    init_cash: 100000
+
+rebalance:
+  frequency: monthly
+  target_weights:
+    "0050": 1.00
+
+dca:
+  contribution: 10000
+  frequency: MS
+
+dividend:
+  mode: reinvest
+
+tax:
+  us:
+    dividend_withholding_rate: 0.30
+
+ledger:
+  base_currency: TWD
+  account_currency: TWD
+  initial_cash: 100000
+
+leverage:
+  enabled: true
+  kind: leveraged_etf_product
+  target_leverage: 1.50
+  max_leverage: 2.00
+  annual_borrow_rate: 0.0
+  maintenance_requirement: 0.35
+  min_safety_buffer: 0.25
+  deleverage_to: 1.00
+
+dynamic_leverage:
+  enabled: true
+  trend_window: 200
+  volatility_window: 63
+  high_volatility: 0.25
+  drawdown_guard: -0.10
+  crash_guard: -0.20
+  risk_on_leverage: 1.80
+  neutral_leverage: 1.20
+  risk_off_leverage: 1.00
+  safety_buffer_guard: 0.30
+
+leveraged_etf_lab:
+  family: tw50
+  initial_cash: 100000
+  dca_initial_cash: 100000
+  dca_contribution: 10000
+  cash_flow_mode: both
+  robust_ranking_enabled: true
+  actual_start_date: "2003-06-30"
+  synthetic_start_date: "1999-03-10"
+  grid_step: 0.10
+  fast_grid_step: 0.25
+  full_grid_step: 0.10
+  top_n: 24
+  fast_top_n: 12
+  high_risk_drawdown: -0.65
+  synthetic_failure_drawdown: -0.85
+  trend_windows: [100, 200]
+  drawdown_guards: [-0.10, -0.20]
+  # 0050 had a 1-for-4 split on 2025-06-18; the TW50 builder split-adjusts
+  # raw prices and cash dividends before constructing total-return prices.
+  products:
+    "0050":
+      leverage: 1.0
+      label: 0050 1x total return
+    "00631L":
+      leverage: 2.0
+      label: 00631L 2x total return
+
+dca_policy_optimizer:
+  enabled: true
+  family: tw50
+  objective: xirr
+  max_drawdown_limit: -0.85
+  high_risk_drawdown_band: -0.75
+  target_leverage_grid: [0.0, 1.0, 1.25, 1.5, 1.75, 2.0]
+  trend_windows: [100, 150, 200, 250]
+  momentum_windows: [63, 126, 252]
+  volatility_windows: [63, 126]
+  volatility_targets: [0.15, 0.20, 0.25]
+  drawdown_guards: [-0.10, -0.20, -0.30, -0.50]
+  dca_initial_cash: 100000
+  dca_contribution: 10000
+  top_n: 24
+  fast_top_n: 12
+  walk_forward_top_n: 5
+  cohort_validation_enabled: true
+  cohort_horizons_years: [5, 10, 15, 20]
+  rebalance_cadence: monthly
+  monitor_cadence: weekly
+  optuna_enabled: false
+
+monthly_decision_pack:
+  enabled: true
+  family: tw50
+  require_optimizer_outputs: true
+  max_drawdown_limit: -0.85
+  high_risk_drawdown_band: -0.75
+  rebalance_cadence: monthly
+  monitor_cadence: weekly
+
+monthly_decision_replay:
+  enabled: true
+  family: tw50
+  selector: hybrid_primary
+  benchmark: fixed_1p5x_dca
+  horizons_years: [5, 10, 15, 20]
+  initial_cash: 100000
+  monthly_contribution: 10000
+  max_drawdown_limit: -0.85
+  min_win_rate: 0.50
+  monte_carlo_enabled: true
+  monte_carlo_seed: 20260504
+  monte_carlo_block_lengths_days: [63, 252, 504]
+  monte_carlo_fast_samples_per_scale: 100
+  monte_carlo_full_samples_per_scale: 500
+
+strategy_search:
+  enabled: true
+  family: tw50
+  engine: optuna
+  n_trials: 1000
+  sampler_seed: 20260504
+  benchmark: fixed_1p5x_dca
+  storage_path: reports/optuna_tw50_v5_return_first_core_external_monthly_weekly_delta_benchmark15x_minfee1_20260508.db
+  objective_mode: return_first
+  objective_profile: return_first
+  drawdown_limit_mode: base_1x_stress_multiplier
+  drawdown_limit_multiplier: 1.20
+  include_sentiment: false
+  sentiment_path: data/external/fear_greed.csv
+  include_external_signals: true
+  external_signal_feature_set: core
+  external_signals_path: data/external/market_regime_features_tw50.csv
+  execution_profile: monthly_core_weekly_delta
+  execution_cadence: monthly_core_weekly_delta
+  contribution_cadence: monthly
+  final_holdout_start: "2019-01-01"
+  final_holdout_end: "2026-05-08"
+
+cost_model:
+  tw:
+    commission_rate: 0.001425
+    commission_discount: 0.28
+    min_commission: 1.0
+    stock_transaction_tax_rate: 0.003
+    etf_transaction_tax_rate: 0.001
+    slippage_bps: 1.0
+  us:
+    commission_per_share: 0.0
+    min_commission: 0.0
+    sec_fee_rate: 0.0000278
+    finra_taf_per_share: 0.000166
+    finra_taf_cap: 8.30
+    slippage_bps: 1.0
+  fx:
+    spread_bps: 10.0

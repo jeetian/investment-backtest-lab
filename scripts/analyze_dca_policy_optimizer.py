@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from investment_backtest_lab.config import load_backtest_config
+from investment_backtest_lab.costs import CostModel
 from investment_backtest_lab.data import MarketDataLoader
 from investment_backtest_lab.dca_policy_optimizer import (
     build_dca_policy_optimizer_outputs,
@@ -18,6 +19,11 @@ from investment_backtest_lab.leveraged_etf_lab import (
     synthetic_daily_reset_prices,
 )
 from investment_backtest_lab.models import AssetSpec, AssetType, DataSource, Market
+from investment_backtest_lab.tw_total_return import (
+    TW50_FAMILY,
+    build_tw50_total_return_inputs,
+    write_tw50_audit_files,
+)
 
 
 def main() -> None:
@@ -69,21 +75,37 @@ def main() -> None:
         ProductSpec.from_config(product)
         for product in config.leveraged_etf_lab.products.values()
     ]
+    cost_model = CostModel.from_dict(config.cost_model)
+    product_assets = product_asset_map(config.universe, products)
     loader = MarketDataLoader(use_cache=True)
-    actual_prices = load_actual_product_prices(
-        loader=loader,
-        universe=config.universe,
-        products=products,
-        start_date=config.leveraged_etf_lab.actual_start_date or config.start_date.isoformat(),
-        end_date=config.end_date.isoformat(),
-    )
-    synthetic_prices = load_synthetic_product_prices(
-        loader=loader,
-        universe=config.universe,
-        products=products,
-        start_date=config.leveraged_etf_lab.synthetic_start_date or config.start_date.isoformat(),
-        end_date=config.end_date.isoformat(),
-    )
+    output_dir = Path(args.output_dir)
+    if family == TW50_FAMILY:
+        tw50 = build_tw50_total_return_inputs(
+            start_date=config.leveraged_etf_lab.synthetic_start_date
+            or config.start_date.isoformat(),
+            end_date=config.end_date.isoformat(),
+            products=products,
+        )
+        actual_prices = tw50.actual_prices
+        synthetic_prices = tw50.hybrid_prices
+        write_tw50_audit_files(output_dir=output_dir, result=tw50)
+    else:
+        actual_prices = load_actual_product_prices(
+            loader=loader,
+            universe=config.universe,
+            products=products,
+            start_date=config.leveraged_etf_lab.actual_start_date
+            or config.start_date.isoformat(),
+            end_date=config.end_date.isoformat(),
+        )
+        synthetic_prices = load_synthetic_product_prices(
+            loader=loader,
+            universe=config.universe,
+            products=products,
+            start_date=config.leveraged_etf_lab.synthetic_start_date
+            or config.start_date.isoformat(),
+            end_date=config.end_date.isoformat(),
+        )
     outputs = build_dca_policy_optimizer_outputs(
         actual_prices=actual_prices,
         synthetic_prices=synthetic_prices,
@@ -91,15 +113,18 @@ def main() -> None:
         config=optimizer_config,
         scan_mode=scan_mode,
         cohort_validation=args.cohort_validation,
+        cost_model=cost_model,
+        product_assets=product_assets,
     )
     result = write_dca_policy_optimizer_report(
         outputs=outputs,
-        output_dir=Path(args.output_dir),
+        output_dir=output_dir,
         family=family,
         config_path=Path(args.config),
     )
     print_terminal_summary(result.metrics, result.allocation_signal)
     print(f"Scan mode:       {scan_mode}")
+    print("Cost mode:       net_of_cost")
     print(f"HTML report:     {result.html_path}")
     print(f"Metrics CSV:     {result.metrics_path}")
     print(f"Policy CSV:      {result.policy_path}")
@@ -119,7 +144,7 @@ def load_actual_product_prices(
     start_date: str,
     end_date: str,
 ) -> pd.DataFrame:
-    assets = [select_or_create_us_etf(universe, product.ticker) for product in products]
+    assets = [select_or_create_supported_asset(universe, product.ticker) for product in products]
     frames = [
         loader.load_asset(
             asset,
@@ -141,7 +166,7 @@ def load_synthetic_product_prices(
     end_date: str,
 ) -> pd.DataFrame:
     base = products[0]
-    base_asset = select_or_create_us_etf(universe, base.ticker)
+    base_asset = select_or_create_supported_asset(universe, base.ticker)
     base_close = loader.load_asset(
         base_asset,
         start_date=start_date,
@@ -151,14 +176,24 @@ def load_synthetic_product_prices(
     return synthetic_daily_reset_prices(base_close, products)
 
 
-def select_or_create_us_etf(universe: list[AssetSpec], ticker: str) -> AssetSpec:
+def select_or_create_supported_asset(universe: list[AssetSpec], ticker: str) -> AssetSpec:
     by_ticker = {asset.ticker.upper(): asset for asset in universe}
     asset = by_ticker.get(ticker.upper())
     if asset is None:
         return AssetSpec(ticker.upper(), Market.US, AssetType.ETF, "USD", DataSource.YFINANCE)
-    if asset.market != Market.US or asset.currency != "USD" or asset.asset_type != AssetType.ETF:
-        raise ValueError(f"DCA policy optimizer supports only USD US ETFs, got {asset}.")
+    if asset.asset_type != AssetType.ETF:
+        raise ValueError(f"DCA policy optimizer supports ETF product assets, got {asset}.")
     return asset
+
+
+def product_asset_map(
+    universe: list[AssetSpec],
+    products: list[ProductSpec],
+) -> dict[str, AssetSpec]:
+    return {
+        product.ticker: select_or_create_supported_asset(universe, product.ticker)
+        for product in products
+    }
 
 
 def print_terminal_summary(metrics: pd.DataFrame, current_signal: pd.DataFrame) -> None:
@@ -175,6 +210,8 @@ def print_terminal_summary(metrics: pd.DataFrame, current_signal: pd.DataFrame) 
                 "risk_flag",
                 "total_contributed",
                 "ending_equity",
+                "total_trade_cost",
+                "cost_drag_on_contributed",
                 "xirr",
                 "max_drawdown",
                 "effective_leverage_avg",
@@ -183,9 +220,9 @@ def print_terminal_summary(metrics: pd.DataFrame, current_signal: pd.DataFrame) 
         ]
         .copy()
     )
-    for column in ["xirr", "max_drawdown"]:
+    for column in ["xirr", "max_drawdown", "cost_drag_on_contributed"]:
         display[column] = display[column].map(format_percent_or_blank)
-    for column in ["total_contributed", "ending_equity"]:
+    for column in ["total_contributed", "ending_equity", "total_trade_cost"]:
         display[column] = display[column].map(format_money_or_blank)
     for column in ["effective_leverage_avg", "effective_leverage_max"]:
         display[column] = display[column].map(format_leverage_or_blank)
@@ -200,13 +237,7 @@ def print_terminal_summary(metrics: pd.DataFrame, current_signal: pd.DataFrame) 
         print(f"target:    {float(signal['target_effective_leverage']):.2f}x")
         print(f"rebalance: {signal.get('next_rebalance_date', '')}")
         print(f"monitor:   {signal.get('next_monitor_date', '')}")
-        print(
-            "weights:   "
-            f"QQQ {float(signal.get('QQQ_weight', 0.0)):.0%}, "
-            f"QLD {float(signal.get('QLD_weight', 0.0)):.0%}, "
-            f"TQQQ {float(signal.get('TQQQ_weight', 0.0)):.0%}, "
-            f"CASH {float(signal.get('CASH_weight', 0.0)):.0%}"
-        )
+        print(f"weights:   {format_weight_summary(signal)}")
 
 
 def format_percent_or_blank(value: object) -> str:
@@ -225,6 +256,22 @@ def format_leverage_or_blank(value: object) -> str:
     if pd.isna(value):
         return ""
     return f"{float(value):.2f}x"
+
+
+def format_weight_summary(row: pd.Series) -> str:
+    parts = []
+    for column in row.index:
+        if (
+            str(column).endswith("_weight")
+            and str(column) != "cash_weight"
+            and not str(column).startswith("previous_")
+        ):
+            ticker = str(column).removesuffix("_weight")
+            value = row.get(column, 0.0)
+            if value == "":
+                continue
+            parts.append(f"{ticker} {float(value):.0%}")
+    return ", ".join(parts)
 
 
 if __name__ == "__main__":

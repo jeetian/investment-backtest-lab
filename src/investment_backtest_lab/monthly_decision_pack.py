@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import escape
@@ -29,6 +30,7 @@ SIGNAL_HISTORY_COLUMNS = [
     "previous_QLD_weight",
     "previous_TQQQ_weight",
     "previous_CASH_weight",
+    "previous_weights_json",
 ]
 
 
@@ -113,6 +115,7 @@ def build_monthly_decision_pack(
     previous = _previous_row(history)
 
     result = current.to_dict()
+    result["weights_json"] = _weights_json(current)
     result["generated_at"] = generated_at or datetime.now(UTC).replace(microsecond=0).isoformat()
     result["first_run"] = previous is None
     result.update(_previous_columns(previous))
@@ -237,12 +240,7 @@ def render_monthly_decision_pack_html(
   <section class="panel">
     <h2>配置比例</h2>
     {_render_allocation_bar(row)}
-    <div class="cards">
-      {_render_weight_card("QQQ", row["QQQ_weight"])}
-      {_render_weight_card("QLD", row["QLD_weight"])}
-      {_render_weight_card("TQQQ", row["TQQQ_weight"])}
-      {_render_weight_card("CASH", row["CASH_weight"])}
-    </div>
+    {_render_weight_cards(row)}
   </section>
 
   <section class="panel">
@@ -346,6 +344,7 @@ def _previous_columns(previous: pd.Series | None) -> dict[str, Any]:
         "previous_QLD_weight": previous.get("QLD_weight", np.nan),
         "previous_TQQQ_weight": previous.get("TQQQ_weight", np.nan),
         "previous_CASH_weight": previous.get("CASH_weight", np.nan),
+        "previous_weights_json": previous.get("weights_json", _weights_json(previous)),
     }
 
 
@@ -360,9 +359,13 @@ def _allocation_changed(current: pd.Series, previous: pd.Series | None) -> bool:
         _safe_float(current.get("target_effective_leverage"))
         - _safe_float(previous.get("target_effective_leverage"))
     )
+    columns = sorted(set(_weight_columns(current)) | set(_weight_columns(previous)))
     weight_delta = max(
-        abs(_safe_float(current.get(column)) - _safe_float(previous.get(column)))
-        for column in WEIGHT_COLUMNS
+        (
+            abs(_safe_float(current.get(column, 0.0)) - _safe_float(previous.get(column, 0.0)))
+            for column in columns
+        ),
+        default=0.0,
     )
     return bool(leverage_delta > 1e-6 or weight_delta > 1e-6)
 
@@ -371,8 +374,10 @@ def _weight_change_summary(current: pd.Series, previous: pd.Series | None) -> st
     if previous is None:
         return "first run: no previous signal history"
     parts = []
-    for ticker, column in zip(["QQQ", "QLD", "TQQQ", "CASH"], WEIGHT_COLUMNS, strict=True):
-        delta = _safe_float(current.get(column)) - _safe_float(previous.get(column))
+    columns = sorted(set(_weight_columns(current)) | set(_weight_columns(previous)))
+    for column in columns:
+        ticker = column.removesuffix("_weight")
+        delta = _safe_float(current.get(column, 0.0)) - _safe_float(previous.get(column, 0.0))
         parts.append(f"{ticker} {delta:+.1%}pt")
     leverage_delta = (
         _safe_float(current.get("target_effective_leverage"))
@@ -544,6 +549,14 @@ def _render_weight_card(label: str, value: Any) -> str:
     """
 
 
+def _render_weight_cards(row: pd.Series) -> str:
+    cards = [
+        _render_weight_card(column.removesuffix("_weight"), row.get(column, 0.0))
+        for column in _weight_columns(row)
+    ]
+    return f'<div class="cards">{"".join(cards)}</div>'
+
+
 def _render_signal_explainability(frame: pd.DataFrame) -> str:
     if frame.empty:
         return "<p>No signal explainability data. Please rerun the DCA policy optimizer.</p>"
@@ -584,16 +597,12 @@ def _render_signal_explainability(frame: pd.DataFrame) -> str:
 
 def _render_allocation_bar(row: pd.Series) -> str:
     segments = []
-    for ticker, css_class, column in [
-        ("QQQ", "qqq", "QQQ_weight"),
-        ("QLD", "qld", "QLD_weight"),
-        ("TQQQ", "tqqq", "TQQQ_weight"),
-        ("CASH", "cash", "CASH_weight"),
-    ]:
+    for column in _weight_columns(row):
+        ticker = column.removesuffix("_weight")
         weight = max(_safe_float(row.get(column), default=0.0), 0.0)
         label = f"{ticker} {_format_percent(weight)}" if weight >= 0.08 else ""
         segments.append(
-            f'<div class="allocation-segment {css_class}" '
+            f'<div class="allocation-segment {_weight_css_class(ticker)}" '
             f'style="width:{weight * 100:.4f}%">{escape(label)}</div>'
         )
     return f'<div class="allocation-bar">{"".join(segments)}</div>'
@@ -705,7 +714,10 @@ def _decision_columns() -> list[tuple[str, str]]:
         ("QQQ_weight", "QQQ"),
         ("QLD_weight", "QLD"),
         ("TQQQ_weight", "TQQQ"),
+        ("0050_weight", "0050"),
+        ("00631L_weight", "00631L"),
         ("CASH_weight", "CASH"),
+        ("weights_json", "Weights JSON"),
         ("manual_review_required", "Manual Review"),
         ("review_reasons", "Review Reasons"),
     ]
@@ -721,7 +733,10 @@ def _history_columns() -> list[tuple[str, str]]:
         ("QQQ_weight", "QQQ"),
         ("QLD_weight", "QLD"),
         ("TQQQ_weight", "TQQQ"),
+        ("0050_weight", "0050"),
+        ("00631L_weight", "00631L"),
         ("CASH_weight", "CASH"),
+        ("weights_json", "Weights JSON"),
         ("manual_review_required", "Review"),
         ("weight_change_summary", "Change"),
     ]
@@ -774,6 +789,33 @@ def _format_leverage(value: Any) -> str:
     if np.isnan(number):
         return ""
     return f"{number:.2f}x"
+
+
+def _weight_columns(frame_or_row: pd.DataFrame | pd.Series) -> list[str]:
+    columns = frame_or_row.columns if isinstance(frame_or_row, pd.DataFrame) else frame_or_row.index
+    return [
+        str(column)
+        for column in columns
+        if str(column).endswith("_weight")
+        and str(column) != "cash_weight"
+        and not str(column).startswith("previous_")
+    ]
+
+
+def _weights_dict(row: pd.Series) -> dict[str, float]:
+    return {
+        column.removesuffix("_weight"): _safe_float(row.get(column), default=0.0)
+        for column in _weight_columns(row)
+    }
+
+
+def _weights_json(row: pd.Series) -> str:
+    return json.dumps(_weights_dict(row), ensure_ascii=False, sort_keys=True)
+
+
+def _weight_css_class(ticker: str) -> str:
+    safe = "".join(character.lower() for character in ticker if character.isalnum())
+    return safe or "weight"
 
 
 def _format_int(value: Any) -> str:

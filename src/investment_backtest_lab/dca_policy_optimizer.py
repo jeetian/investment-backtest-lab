@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from dataclasses import dataclass, replace
@@ -9,14 +9,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from investment_backtest_lab.costs import CostModel
 from investment_backtest_lab.leveraged_etf_lab import (
     CASH,
     ProductSpec,
     monthly_rebalance_dates,
+    rebalance_dates_for_cadence,
     simulate_weighted_strategy,
     xirr,
 )
-from investment_backtest_lab.models import DCAPolicyOptimizerConfig
+from investment_backtest_lab.models import AssetSpec, DCAPolicyOptimizerConfig
 from investment_backtest_lab.reports import performance_summary
 
 DATA_MODE_ACTUAL = "actual_etf"
@@ -93,7 +95,9 @@ def policy_config_for_scan_mode(
         volatility_targets = tuple(
             value for value in config.volatility_targets if value in {0.25, 0.35}
         )
-        target_grid = tuple(value for value in config.target_leverage_grid if value in {0, 1, 2, 3})
+        target_grid = tuple(
+            value for value in config.target_leverage_grid if value in {0, 1, 1.5, 2, 3}
+        )
         return replace(
             config,
             trend_windows=trend_windows or config.trend_windows[:2],
@@ -141,6 +145,8 @@ def build_dca_policy_optimizer_outputs(
     config: DCAPolicyOptimizerConfig,
     scan_mode: str,
     cohort_validation: bool | None = None,
+    cost_model: CostModel | None = None,
+    product_assets: dict[str, AssetSpec] | None = None,
 ) -> DCAPolicyOptimizerOutputs:
     specs = build_policy_scenario_specs(config=config, products=products, scan_mode=scan_mode)
     product_leverages = {product.ticker: product.leverage for product in products}
@@ -157,6 +163,8 @@ def build_dca_policy_optimizer_outputs(
                 products=products,
                 product_leverages=product_leverages,
                 config=config,
+                cost_model=cost_model,
+                product_assets=product_assets,
             )
         )
     if not synthetic_prices.empty:
@@ -170,6 +178,8 @@ def build_dca_policy_optimizer_outputs(
                 products=products,
                 product_leverages=product_leverages,
                 config=config,
+                cost_model=cost_model,
+                product_assets=product_assets,
             )
         )
     if not frames:
@@ -184,6 +194,8 @@ def build_dca_policy_optimizer_outputs(
         products=products,
         product_leverages=product_leverages,
         config=config,
+        cost_model=cost_model,
+        product_assets=product_assets,
     )
     metrics = apply_policy_validation(metrics, walk_forward, config=config)
     metrics = apply_cross_mode_candidate_filter(metrics, config=config)
@@ -206,6 +218,8 @@ def build_dca_policy_optimizer_outputs(
             product_leverages=product_leverages,
             config=config,
             base_curves=curves,
+            cost_model=cost_model,
+            product_assets=product_assets,
         )
         cohort_summary = build_cohort_summary(cohorts)
         metrics = apply_cohort_validation(metrics, cohort_summary, config=config)
@@ -219,6 +233,8 @@ def build_dca_policy_optimizer_outputs(
         policy=policy,
         trading_index=_combined_trading_index(mode_prices),
         top_n=config.top_n,
+        rebalance_cadence=config.rebalance_cadence,
+        monitor_cadence=config.monitor_cadence,
     )
     signal_explainability = build_signal_explainability(
         allocation_signal=allocation_signal,
@@ -349,6 +365,8 @@ def build_policy_walk_forward_validation(
     products: list[ProductSpec],
     product_leverages: dict[str, float],
     config: DCAPolicyOptimizerConfig,
+    cost_model: CostModel | None = None,
+    product_assets: dict[str, AssetSpec] | None = None,
     train_years: int = DEFAULT_TRAIN_YEARS,
     test_years: int = DEFAULT_TEST_YEARS,
     step_years: int = DEFAULT_STEP_YEARS,
@@ -376,6 +394,8 @@ def build_policy_walk_forward_validation(
                 products=products,
                 product_leverages=product_leverages,
                 config=config,
+                cost_model=cost_model,
+                product_assets=product_assets,
             )
             train_ranked = rank_policy_metrics(
                 apply_policy_validation(train_metrics, pd.DataFrame(), config=config)
@@ -394,6 +414,8 @@ def build_policy_walk_forward_validation(
                 products=products,
                 product_leverages=product_leverages,
                 config=config,
+                cost_model=cost_model,
+                product_assets=product_assets,
             )
             for row in test_metrics.itertuples():
                 spec_key = str(row.scenario_id).split("--", maxsplit=1)[1]
@@ -437,6 +459,8 @@ def build_rolling_cohort_validation(
     product_leverages: dict[str, float],
     config: DCAPolicyOptimizerConfig,
     base_curves: pd.DataFrame | None = None,
+    cost_model: CostModel | None = None,
+    product_assets: dict[str, AssetSpec] | None = None,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     source_curves = _cohort_source_curves(
@@ -446,6 +470,8 @@ def build_rolling_cohort_validation(
         product_leverages=product_leverages,
         config=config,
         base_curves=base_curves,
+        cost_model=cost_model,
+        product_assets=product_assets,
     )
     curve_lookup = {
         str(scenario_id): group.sort_values("date").reset_index(drop=True)
@@ -484,6 +510,7 @@ def build_rolling_cohort_validation(
                             short_label=spec.short_label,
                             strategy_family=spec.family,
                             config=config,
+                            cost_mode=_cost_mode(cost_model),
                         )
                     )
                 if not cohort_rows:
@@ -530,6 +557,9 @@ def _cohort_source_curves(
     product_leverages: dict[str, float],
     config: DCAPolicyOptimizerConfig,
     base_curves: pd.DataFrame | None,
+    cost_model: CostModel | None = None,
+    product_assets: dict[str, AssetSpec] | None = None,
+    cost_multiplier: float = 1.0,
 ) -> pd.DataFrame:
     selected_ids = {
         f"{data_mode}--dca-policy-{spec.name}"
@@ -554,6 +584,9 @@ def _cohort_source_curves(
             products=products,
             product_leverages=product_leverages,
             config=config,
+            cost_model=cost_model,
+            product_assets=product_assets,
+            cost_multiplier=cost_multiplier,
         )
         frames.append(curves)
     if not frames:
@@ -586,12 +619,31 @@ def _cohort_curve_from_source(
         leverage = data["effective_product_leverage"].astype(float).to_numpy()
     else:
         leverage = np.full(len(data), np.nan)
+    cost_columns = [
+        "trade_cost",
+        "commission",
+        "transaction_tax",
+        "sec_fee",
+        "finra_taf",
+        "slippage",
+        "turnover",
+    ]
+    costs = {
+        column: (
+            data[column].astype(float).fillna(0.0).to_numpy()
+            if column in data.columns
+            else np.zeros(len(data), dtype=float)
+        )
+        for column in cost_columns
+    }
+    cost_mode = _last_text(data, "cost_mode", default="gross_no_cost_model")
     contribution_dates = monthly_rebalance_dates(dates)
 
     equity = 0.0
     total_contributed = 0.0
     return_index = 1.0
     peak_index = 1.0
+    cumulative_trade_cost = 0.0
     rows: list[dict[str, Any]] = []
     for position, date in enumerate(dates):
         contribution = (
@@ -606,6 +658,8 @@ def _cohort_curve_from_source(
         else:
             period_return = float(returns[position])
             equity = equity * (1.0 + period_return) + contribution
+        trade_cost = 0.0 if position == 0 else float(costs["trade_cost"][position])
+        cumulative_trade_cost += trade_cost
         total_contributed += contribution
         return_index *= 1.0 + period_return
         peak_index = max(peak_index, return_index)
@@ -615,8 +669,19 @@ def _cohort_curve_from_source(
                 "total_equity": equity,
                 "contribution": contribution,
                 "total_contributed": total_contributed,
+                "cost_mode": cost_mode,
                 "cash": 0.0,
                 "effective_product_leverage": float(leverage[position]),
+                "trade_cost": trade_cost,
+                "commission": 0.0 if position == 0 else float(costs["commission"][position]),
+                "transaction_tax": (
+                    0.0 if position == 0 else float(costs["transaction_tax"][position])
+                ),
+                "sec_fee": 0.0 if position == 0 else float(costs["sec_fee"][position]),
+                "finra_taf": 0.0 if position == 0 else float(costs["finra_taf"][position]),
+                "slippage": 0.0 if position == 0 else float(costs["slippage"][position]),
+                "cumulative_trade_cost": cumulative_trade_cost,
+                "turnover": 0.0 if position == 0 else float(costs["turnover"][position]),
                 "investment_return": period_return,
                 "return_index": return_index,
                 "drawdown": return_index / peak_index - 1.0,
@@ -813,25 +878,29 @@ def build_current_signal(
         if scenario_policy.empty:
             continue
         latest = scenario_policy.iloc[-1]
-        rows.append(
-            {
-                "as_of_date": pd.Timestamp(latest["date"]).date().isoformat(),
-                "data_mode": metric.data_mode,
-                "scenario_id": metric.scenario_id,
-                "scenario_label": metric.scenario_label,
-                "rank": metric.rank,
-                "validation_status": metric.validation_status,
-                "regime": latest["regime"],
-                "reason": latest["reason"],
-                "target_effective_leverage": latest["target_effective_leverage"],
-                "QQQ_weight": latest.get("QQQ_weight", np.nan),
-                "QLD_weight": latest.get("QLD_weight", np.nan),
-                "TQQQ_weight": latest.get("TQQQ_weight", np.nan),
-                "CASH_weight": latest.get("CASH_weight", np.nan),
-                "xirr": metric.xirr,
-                "max_drawdown": metric.max_drawdown,
-            }
-        )
+        row = {
+            "as_of_date": pd.Timestamp(latest["date"]).date().isoformat(),
+            "data_mode": metric.data_mode,
+            "scenario_id": metric.scenario_id,
+            "scenario_label": metric.scenario_label,
+            "rank": metric.rank,
+            "validation_status": metric.validation_status,
+            "regime": latest["regime"],
+            "reason": latest["reason"],
+            "target_effective_leverage": latest["target_effective_leverage"],
+            "xirr": metric.xirr,
+            "max_drawdown": metric.max_drawdown,
+            "cost_mode": getattr(metric, "cost_mode", "gross_no_cost_model"),
+            "total_trade_cost": getattr(metric, "total_trade_cost", 0.0),
+            "cost_drag_on_contributed": getattr(
+                metric,
+                "cost_drag_on_contributed",
+                np.nan,
+            ),
+            "turnover_sum": getattr(metric, "turnover_sum", 0.0),
+        }
+        row.update({column: latest.get(column, np.nan) for column in _weight_columns(latest)})
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -841,30 +910,34 @@ def build_allocation_signal(
     policy: pd.DataFrame,
     trading_index: pd.DatetimeIndex,
     top_n: int,
+    rebalance_cadence: str = "monthly",
+    monitor_cadence: str = "weekly",
 ) -> pd.DataFrame:
     signal = build_current_signal(metrics=metrics, policy=policy, top_n=top_n)
     if signal.empty:
         return signal
     as_of = pd.Timestamp(signal["as_of_date"].iloc[0])
-    next_rebalance = _next_monthly_trading_date(trading_index, as_of)
+    next_rebalance = _next_rebalance_trading_date(
+        trading_index,
+        as_of,
+        cadence=rebalance_cadence,
+    )
     next_monitor = _next_weekly_monitor_date(as_of)
     signal = signal.copy()
     signal["next_rebalance_date"] = (
         next_rebalance.date().isoformat() if next_rebalance is not None else ""
     )
     signal["next_monitor_date"] = next_monitor.date().isoformat()
-    signal["rebalance_cadence"] = "monthly"
-    signal["monitor_cadence"] = "weekly"
+    signal["rebalance_cadence"] = str(rebalance_cadence).lower()
+    signal["monitor_cadence"] = str(monitor_cadence).lower()
     signal["review_now"] = signal["regime"].astype(str).str.contains(
         "off|defensive|severe",
         case=False,
         regex=True,
     )
+    weight_columns = _weight_columns(signal)
     signal["weight_sum"] = (
-        signal.get("QQQ_weight", 0.0).astype(float)
-        + signal.get("QLD_weight", 0.0).astype(float)
-        + signal.get("TQQQ_weight", 0.0).astype(float)
-        + signal.get("CASH_weight", 0.0).astype(float)
+        signal[weight_columns].astype(float).sum(axis=1) if weight_columns else 0.0
     )
     signal["allocation_summary"] = signal.apply(_allocation_summary, axis=1)
     signal["validation_note"] = signal.apply(_allocation_validation_note, axis=1)
@@ -1053,13 +1126,23 @@ def build_signal_explainability(
 
 
 def _allocation_summary(row: pd.Series) -> str:
+    weight_parts = [
+        f"{column.removesuffix('_weight')} {_format_percent(row.get(column, 0.0))}"
+        for column in _weight_columns(row)
+    ]
     return (
         f"{float(row.get('target_effective_leverage', 0.0)):.2f}x target: "
-        f"QQQ {_format_percent(row.get('QQQ_weight', 0.0))}, "
-        f"QLD {_format_percent(row.get('QLD_weight', 0.0))}, "
-        f"TQQQ {_format_percent(row.get('TQQQ_weight', 0.0))}, "
-        f"CASH {_format_percent(row.get('CASH_weight', 0.0))}"
+        + ", ".join(weight_parts)
     )
+
+
+def _weight_columns(frame_or_row: pd.DataFrame | pd.Series) -> list[str]:
+    columns = frame_or_row.columns if isinstance(frame_or_row, pd.DataFrame) else frame_or_row.index
+    return [
+        str(column)
+        for column in columns
+        if str(column).endswith("_weight") and str(column) != "cash_weight"
+    ]
 
 
 def _allocation_validation_note(row: pd.Series) -> str:
@@ -1085,10 +1168,12 @@ def _allocation_risk_note(row: pd.Series) -> str:
 
 
 def _allocation_cadence_note(row: pd.Series) -> str:
+    trade_cadence = str(row.get("rebalance_cadence", "monthly"))
+    monitor_cadence = str(row.get("monitor_cadence", "weekly"))
     return (
         f"正式調整日：{row.get('next_rebalance_date', '')}; "
-        f"下一次週度監控：{row.get('next_monitor_date', '')}; "
-        "週度監控只提示 review，不自動調倉。"
+        f"trade cadence: {trade_cadence}; monitor cadence: {monitor_cadence}; "
+        f"next monitor: {row.get('next_monitor_date', '')}."
     )
 
 
@@ -1129,6 +1214,15 @@ def build_policy_compare_payload(
                     "drawdown": _json_series(group["drawdown"]),
                     "effective_leverage": _json_series(group["effective_product_leverage"]),
                     "total_contributed": _json_series(group["total_contributed"]),
+                    "cumulative_trade_cost": _json_series(
+                        group.get("cumulative_trade_cost", pd.Series(0.0, index=group.index))
+                    ),
+                    "trade_cost": _json_series(
+                        group.get("trade_cost", pd.Series(0.0, index=group.index))
+                    ),
+                    "turnover": _json_series(
+                        group.get("turnover", pd.Series(0.0, index=group.index))
+                    ),
                 },
             }
         )
@@ -1151,6 +1245,21 @@ def build_policy_compare_payload(
                 "label": "Cumulative contributed",
                 "axis": "USD",
                 "format": "money",
+            },
+            "cumulative_trade_cost": {
+                "label": "Cumulative trade cost",
+                "axis": "Cost",
+                "format": "money",
+            },
+            "trade_cost": {
+                "label": "Period trade cost",
+                "axis": "Cost",
+                "format": "money",
+            },
+            "turnover": {
+                "label": "Turnover",
+                "axis": "Turnover",
+                "format": "number",
             },
         },
         "scenarios": scenarios,
@@ -1606,11 +1715,15 @@ def _run_data_mode(
     products: list[ProductSpec],
     product_leverages: dict[str, float],
     config: DCAPolicyOptimizerConfig,
+    cost_model: CostModel | None = None,
+    product_assets: dict[str, AssetSpec] | None = None,
+    cost_multiplier: float = 1.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     metric_rows: list[dict[str, Any]] = []
     curve_frames: list[pd.DataFrame] = []
     policy_frames: list[pd.DataFrame] = []
     contribution_dates = monthly_rebalance_dates(prices.index)
+    trade_dates = rebalance_dates_for_cadence(prices.index, config.rebalance_cadence)
     for spec in specs:
         weights, policy = build_policy_weights(
             prices=prices,
@@ -1623,9 +1736,14 @@ def _run_data_mode(
             target_weights=weights,
             product_leverages=product_leverages,
             initial_cash=config.dca_initial_cash,
-            rebalance_on_change=True,
+            rebalance_dates=trade_dates,
+            rebalance_on_change=False,
+            rebalance_on_contribution=config.rebalance_cadence != "weekly",
             contribution_dates=contribution_dates,
             contribution_amount=config.dca_contribution,
+            cost_model=cost_model,
+            product_assets=product_assets,
+            cost_multiplier=cost_multiplier,
         )
         scenario_id = f"{data_mode}--dca-policy-{spec.name}"
         curve.insert(0, "scenario_id", scenario_id)
@@ -1647,6 +1765,7 @@ def _run_data_mode(
                 short_label=spec.short_label,
                 strategy_family=spec.family,
                 config=config,
+                cost_mode=_cost_mode(cost_model),
             )
         )
         curve_frames.append(curve)
@@ -1763,6 +1882,7 @@ def _metrics_row(
     short_label: str,
     strategy_family: str,
     config: DCAPolicyOptimizerConfig,
+    cost_mode: str = "gross_no_cost_model",
 ) -> dict[str, Any]:
     returns = curve["investment_return"].astype(float).dropna()
     summary = performance_summary(returns) if not returns.empty else pd.Series(dtype=float)
@@ -1772,16 +1892,23 @@ def _metrics_row(
     max_drawdown = float(curve["drawdown"].astype(float).min())
     recovery_days = _max_recovery_days(curve["return_index"], curve["date"])
     risk_flag = _risk_flag(max_drawdown=max_drawdown, config=config)
+    total_trade_cost = _last_or_sum(curve, "cumulative_trade_cost", "trade_cost")
+    turnover_sum = float(curve.get("turnover", pd.Series(dtype=float)).astype(float).sum())
+    cost_drag = total_trade_cost / total_contributed if total_contributed else np.nan
     return {
         "data_mode": data_mode,
         "scenario_id": scenario_id,
         "scenario_label": scenario_label,
         "short_label": short_label,
         "strategy_family": strategy_family,
+        "cost_mode": cost_mode,
         "start_date": pd.Timestamp(curve["date"].iloc[0]).date().isoformat(),
         "end_date": pd.Timestamp(curve["date"].iloc[-1]).date().isoformat(),
         "total_contributed": total_contributed,
         "ending_equity": ending_equity,
+        "total_trade_cost": total_trade_cost,
+        "cost_drag_on_contributed": cost_drag,
+        "turnover_sum": turnover_sum,
         "simple_cash_return": simple_cash_return,
         "xirr": _xirr_from_curve(curve),
         "cagr": _summary_value(summary, "cagr"),
@@ -1804,6 +1931,27 @@ def _clean_prices(prices: pd.DataFrame, products: list[ProductSpec]) -> pd.DataF
     if clean.empty:
         raise ValueError("DCA policy optimizer requires overlapping product prices.")
     return clean
+
+
+def _cost_mode(cost_model: CostModel | None) -> str:
+    return "net_of_cost" if cost_model is not None else "gross_no_cost_model"
+
+
+def _last_or_sum(frame: pd.DataFrame, cumulative_column: str, period_column: str) -> float:
+    if cumulative_column in frame.columns:
+        values = frame[cumulative_column].astype(float).dropna()
+        if not values.empty:
+            return float(values.iloc[-1])
+    if period_column in frame.columns:
+        return float(frame[period_column].astype(float).fillna(0.0).sum())
+    return 0.0
+
+
+def _last_text(frame: pd.DataFrame, column: str, *, default: str = "") -> str:
+    if column not in frame.columns:
+        return default
+    values = frame[column].dropna()
+    return default if values.empty else str(values.iloc[-1])
 
 
 def _weights_from_target_series(
@@ -1967,6 +2115,47 @@ def _next_monthly_trading_date(
         if timestamp.to_period("M") >= next_period:
             return timestamp
     return None
+
+
+def _next_rebalance_trading_date(
+    trading_index: pd.DatetimeIndex,
+    as_of: pd.Timestamp,
+    *,
+    cadence: str,
+) -> pd.Timestamp | None:
+    normalized = str(cadence or "monthly").lower().replace("-", "_")
+    if normalized == "monthly":
+        return _next_monthly_trading_date(trading_index, as_of)
+    future_index = pd.DatetimeIndex(trading_index).sort_values()
+    if future_index.empty:
+        return None
+    if normalized == "weekly":
+        next_week = pd.Timestamp(as_of).to_period("W-SUN") + 1
+        future = future_index[
+            (future_index > as_of) & (future_index.to_period("W-SUN") >= next_week)
+        ]
+        if future.empty:
+            return pd.Timestamp(next_week.start_time)
+        grouped = pd.Series(future, index=future).groupby(future.to_period("W-SUN")).first()
+        for value in grouped:
+            timestamp = pd.Timestamp(value)
+            if timestamp.to_period("W-SUN") >= next_week:
+                return timestamp
+        return None
+    if normalized == "quarterly":
+        next_period = pd.Timestamp(as_of).to_period("Q") + 1
+        future = future_index[
+            (future_index > as_of) & (future_index.to_period("Q") >= next_period)
+        ]
+        if future.empty:
+            return pd.Timestamp(next_period.start_time)
+        grouped = pd.Series(future, index=future).groupby(future.to_period("Q")).first()
+        for value in grouped:
+            timestamp = pd.Timestamp(value)
+            if timestamp.to_period("Q") >= next_period:
+                return timestamp
+        return None
+    return pd.Timestamp(as_of) + pd.Timedelta(days=1)
 
 
 def _next_weekly_monitor_date(as_of: pd.Timestamp) -> pd.Timestamp:
@@ -2471,9 +2660,15 @@ def _format_cell(value: Any, key: str) -> str:
         "worst_cohort_max_drawdown",
         "top3_hit_rate",
         "drawdown_breach_rate",
+        "cost_drag_on_contributed",
     }:
         return _format_percent(value)
-    if key in {"ending_equity", "total_contributed", "test_ending_equity"}:
+    if key in {
+        "ending_equity",
+        "total_contributed",
+        "test_ending_equity",
+        "total_trade_cost",
+    }:
         return _format_money(value)
     if key.endswith("_weight"):
         return _format_percent(value)
@@ -2508,10 +2703,14 @@ def _metric_columns() -> list[tuple[str, str]]:
         ("scenario_label", "Strategy"),
         ("validation_status", "Validation"),
         ("risk_flag", "Risk"),
+        ("cost_mode", "Cost Mode"),
         ("cohort_validation_status", "Cohort"),
         ("xirr", "XIRR"),
         ("ending_equity", "Ending Equity"),
         ("total_contributed", "Contributed"),
+        ("total_trade_cost", "Trade Cost"),
+        ("cost_drag_on_contributed", "Cost Drag"),
+        ("turnover_sum", "Turnover"),
         ("simple_cash_return", "Simple Return"),
         ("max_drawdown", "Max DD"),
         ("recovery_days", "Recovery Days"),
@@ -2536,9 +2735,14 @@ def _signal_columns() -> list[tuple[str, str]]:
         ("QQQ_weight", "QQQ"),
         ("QLD_weight", "QLD"),
         ("TQQQ_weight", "TQQQ"),
+        ("0050_weight", "0050"),
+        ("00631L_weight", "00631L"),
         ("CASH_weight", "CASH"),
         ("xirr", "XIRR"),
         ("max_drawdown", "Max DD"),
+        ("cost_mode", "Cost Mode"),
+        ("total_trade_cost", "Trade Cost"),
+        ("cost_drag_on_contributed", "Cost Drag"),
         ("allocation_summary", "Allocation Summary"),
         ("risk_note", "Risk Note"),
     ]

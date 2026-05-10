@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import timedelta
 from pathlib import Path
 
@@ -58,13 +59,10 @@ def main() -> None:
     print(f"research:    {row['replay_primary_scenario_label']}")
     print(f"actionable:  {row['actionable_default_scenario_label']}")
     print(f"recommended: {row['recommended_scenario_label']}")
-    print(
-        "weights:     "
-        f"QQQ {float(row['recommended_QQQ_weight']):.0%}, "
-        f"QLD {float(row['recommended_QLD_weight']):.0%}, "
-        f"TQQQ {float(row['recommended_TQQQ_weight']):.0%}, "
-        f"CASH {float(row['recommended_CASH_weight']):.0%}"
-    )
+    print(f"weights:     {format_weight_summary(row)}")
+    print(f"cost mode:   {row['actionable_default_cost_mode']}")
+    cost_drag = format_percent_or_blank(row["actionable_default_cost_drag_on_contributed"])
+    print(f"cost drag:   {cost_drag}")
     print(f"replay top:  {row['replay_primary_scenario_label']}")
     print(f"actual ref:  {row['actual_primary_scenario_label']}")
     print(f"disagrees:   {bool(row['actual_disagrees_with_authority'])}")
@@ -74,6 +72,36 @@ def main() -> None:
     print(f"HTML:        {result.html_path}")
     print(f"CSV:         {result.csv_path}")
     print(f"Top N:       {result.top_candidates_path}")
+
+
+def format_weight_summary(row) -> str:
+    raw = row.get("recommended_weights_json", "")
+    weights = {}
+    if raw:
+        try:
+            parsed = json.loads(str(raw))
+            if isinstance(parsed, dict):
+                weights = {str(key): float(value) for key, value in parsed.items()}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            weights = {}
+    if not weights:
+        weights = {
+            ticker: float(row.get(f"recommended_{ticker}_weight", 0.0))
+            for ticker in ["QQQ", "QLD", "TQQQ", "CASH"]
+        }
+    clean = {ticker: value for ticker, value in weights.items() if value == value}
+    if not clean:
+        return "no tradable weights"
+    return ", ".join(f"{ticker} {value:.0%}" for ticker, value in clean.items())
+
+
+def format_percent_or_blank(value) -> str:
+    try:
+        if value != value:
+            return ""
+        return f"{float(value):.2%}"
+    except (TypeError, ValueError):
+        return ""
 
 
 if __name__ == "__main__":

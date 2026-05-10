@@ -9,6 +9,7 @@ pytest-cache-files-*/
 .ipynb_checkpoints/
 data/raw/
 data/cache/
+data/external/
 data/processed/
 reports/
 *.html

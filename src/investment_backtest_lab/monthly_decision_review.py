@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +20,11 @@ REVIEW_COLUMNS = [
     "recommended_QLD_weight",
     "recommended_TQQQ_weight",
     "recommended_CASH_weight",
+    "recommended_weights_json",
+    "recommended_cost_mode",
+    "recommended_total_trade_cost",
+    "recommended_cost_drag_on_contributed",
+    "recommended_turnover_sum",
     "manual_review_required",
     "review_reasons",
     "actual_primary_scenario_label",
@@ -126,14 +132,26 @@ def build_monthly_decision_review_record(
             row.get("actual_primary_as_of_date"),
         ),
         "decision_authority": row.get("decision_authority", ""),
-        "recommended_scenario_label": row.get("recommended_scenario_label", ""),
+        "recommended_scenario_label": _safe_text(row.get("recommended_scenario_label")),
         "recommended_QQQ_weight": _safe_float(row.get("recommended_QQQ_weight")),
         "recommended_QLD_weight": _safe_float(row.get("recommended_QLD_weight")),
         "recommended_TQQQ_weight": _safe_float(row.get("recommended_TQQQ_weight")),
         "recommended_CASH_weight": _safe_float(row.get("recommended_CASH_weight")),
+        "recommended_weights_json": row.get(
+            "recommended_weights_json",
+            _legacy_weights_json(row),
+        ),
+        "recommended_cost_mode": _safe_text(row.get("actionable_default_cost_mode")),
+        "recommended_total_trade_cost": _safe_float(
+            row.get("actionable_default_total_trade_cost")
+        ),
+        "recommended_cost_drag_on_contributed": _safe_float(
+            row.get("actionable_default_cost_drag_on_contributed")
+        ),
+        "recommended_turnover_sum": _safe_float(row.get("actionable_default_turnover_sum")),
         "manual_review_required": _safe_bool(row.get("manual_review_required")),
-        "review_reasons": row.get("review_reasons", ""),
-        "actual_primary_scenario_label": row.get("actual_primary_scenario_label", ""),
+        "review_reasons": _safe_text(row.get("review_reasons")),
+        "actual_primary_scenario_label": _safe_text(row.get("actual_primary_scenario_label")),
         "strategies_differ": _safe_bool(row.get("strategies_differ")),
         "review_status": status,
         "selected_layer": selected_layer,
@@ -152,12 +170,7 @@ def render_monthly_decision_review_markdown(review: pd.DataFrame) -> str:
     if review.empty:
         raise ValueError("Monthly decision review markdown requires a non-empty review frame.")
     row = review.iloc[0]
-    weights = (
-        f"QQQ {_format_percent(row['recommended_QQQ_weight'])}, "
-        f"QLD {_format_percent(row['recommended_QLD_weight'])}, "
-        f"TQQQ {_format_percent(row['recommended_TQQQ_weight'])}, "
-        f"CASH {_format_percent(row['recommended_CASH_weight'])}"
-    )
+    weights = _format_weights(row)
     accepted_with_flags = (
         row["review_status"] == "accepted" and _safe_bool(row["manual_review_required"])
     )
@@ -188,6 +201,10 @@ def render_monthly_decision_review_markdown(review: pd.DataFrame) -> str:
 - Selected layer: `{row["selected_layer"]}`
 - Recommended strategy: `{row["recommended_scenario_label"]}`
 - Weights: {weights}
+- Cost mode: `{row["recommended_cost_mode"]}`
+- Total trade cost: `{_format_number(row["recommended_total_trade_cost"])}`
+- Cost drag on contributed: `{_format_ratio_percent(row["recommended_cost_drag_on_contributed"])}`
+- Turnover sum: `{_format_number(row["recommended_turnover_sum"])}`
 
 ## Review
 
@@ -231,10 +248,59 @@ def _first_non_empty(*values: Any) -> str:
     return ""
 
 
+def _safe_text(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value)
+
+
+def _legacy_weights_json(row: pd.Series) -> str:
+    weights = {
+        ticker: _safe_float(row.get(f"recommended_{ticker}_weight"))
+        for ticker in ["QQQ", "QLD", "TQQQ", "CASH"]
+    }
+    weights = {key: value for key, value in weights.items() if not pd.isna(value)}
+    return json.dumps(weights, ensure_ascii=False, sort_keys=True)
+
+
+def _format_weights(row: pd.Series) -> str:
+    raw = row.get("recommended_weights_json", "")
+    weights: dict[str, float] = {}
+    if raw and not pd.isna(raw):
+        try:
+            parsed = json.loads(str(raw))
+            if isinstance(parsed, dict):
+                weights = {str(key): _safe_float(value) for key, value in parsed.items()}
+        except json.JSONDecodeError:
+            weights = {}
+    if not weights:
+        weights = {
+            ticker: _safe_float(row.get(f"recommended_{ticker}_weight"))
+            for ticker in ["QQQ", "QLD", "TQQQ", "CASH"]
+        }
+    return ", ".join(
+        f"{ticker} {_format_percent(value)}"
+        for ticker, value in weights.items()
+        if not pd.isna(value)
+    )
+
+
 def _format_percent(value: Any) -> str:
     if value is None or pd.isna(value):
         return ""
     return f"{float(value):.0%}"
+
+
+def _format_ratio_percent(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return f"{float(value):.2%}"
+
+
+def _format_number(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return f"{float(value):,.2f}"
 
 
 __all__ = [

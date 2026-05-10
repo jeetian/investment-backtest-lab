@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from investment_backtest_lab.costs import CostModel, USCostConfig
 from investment_backtest_lab.dca_policy_optimizer import (
     VALIDATION_STABLE,
     VALIDATION_WATCHLIST,
@@ -20,7 +21,13 @@ from investment_backtest_lab.dca_policy_optimizer import (
     write_dca_policy_optimizer_report,
 )
 from investment_backtest_lab.leveraged_etf_lab import CASH, ProductSpec
-from investment_backtest_lab.models import DCAPolicyOptimizerConfig
+from investment_backtest_lab.models import (
+    AssetSpec,
+    AssetType,
+    DataSource,
+    DCAPolicyOptimizerConfig,
+    Market,
+)
 
 
 def test_target_leverage_to_product_weights_interpolates_between_products():
@@ -98,6 +105,10 @@ def test_policy_optimizer_outputs_dca_metrics_and_allocation_signal():
         "xirr",
         "ending_equity",
         "total_contributed",
+        "cost_mode",
+        "total_trade_cost",
+        "cost_drag_on_contributed",
+        "turnover_sum",
         "simple_cash_return",
         "max_drawdown",
         "recovery_days",
@@ -131,6 +142,48 @@ def test_policy_optimizer_outputs_dca_metrics_and_allocation_signal():
         "volatility_value",
         "drawdown",
     }.issubset(outputs.policy.columns)
+
+
+def test_policy_optimizer_applies_cost_model_to_metrics_and_curves():
+    config = small_config()
+    cost_model = CostModel(us=USCostConfig(slippage_bps=10.0))
+    product_assets = {
+        product.ticker: AssetSpec(
+            product.ticker,
+            Market.US,
+            AssetType.ETF,
+            "USD",
+            DataSource.YFINANCE,
+        )
+        for product in sample_products()
+    }
+
+    gross = build_dca_policy_optimizer_outputs(
+        actual_prices=sample_long_prices(),
+        synthetic_prices=pd.DataFrame(),
+        products=sample_products(),
+        config=config,
+        scan_mode="fast",
+    )
+    net = build_dca_policy_optimizer_outputs(
+        actual_prices=sample_long_prices(),
+        synthetic_prices=pd.DataFrame(),
+        products=sample_products(),
+        config=config,
+        scan_mode="fast",
+        cost_model=cost_model,
+        product_assets=product_assets,
+    )
+
+    assert set(net.metrics["cost_mode"]) == {"net_of_cost"}
+    assert net.metrics["total_trade_cost"].max() > 0.0
+    assert net.curves["cumulative_trade_cost"].max() > 0.0
+    payload_series = net.payload["scenarios"][0]["series"]
+    assert {"cumulative_trade_cost", "trade_cost", "turnover"}.issubset(payload_series)
+    assert "cumulative_trade_cost" in net.payload["metrics"]
+    costed = net.metrics.sort_values("total_trade_cost", ascending=False).iloc[0]
+    gross_match = gross.metrics[gross.metrics["scenario_id"] == costed["scenario_id"]].iloc[0]
+    assert costed["ending_equity"] < gross_match["ending_equity"]
 
 
 def test_policy_validation_prefers_stable_strategy_over_high_xirr_bad_test():

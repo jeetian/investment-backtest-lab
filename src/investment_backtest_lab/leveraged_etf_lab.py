@@ -9,7 +9,12 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from investment_backtest_lab.models import LeveragedETFLabConfig, LeveragedETFProductConfig
+from investment_backtest_lab.costs import CostModel, TradeSide
+from investment_backtest_lab.models import (
+    AssetSpec,
+    LeveragedETFLabConfig,
+    LeveragedETFProductConfig,
+)
 from investment_backtest_lab.reports import performance_summary
 
 CASH = "CASH"
@@ -266,8 +271,12 @@ def simulate_weighted_strategy(
     initial_cash: float,
     rebalance_dates: set[pd.Timestamp] | None = None,
     rebalance_on_change: bool = False,
+    rebalance_on_contribution: bool = True,
     contribution_dates: set[pd.Timestamp] | None = None,
     contribution_amount: float = 0.0,
+    cost_model: CostModel | None = None,
+    product_assets: dict[str, AssetSpec] | None = None,
+    cost_multiplier: float = 1.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     clean_prices = prices.dropna(how="any").astype(float).sort_index()
     if clean_prices.empty:
@@ -291,21 +300,32 @@ def simulate_weighted_strategy(
     cash_value = 0.0
     current_target = np.zeros(len(weights.columns), dtype=float)
     total_contributed = 0.0
+    cumulative_trade_cost = 0.0
+    cost_mode = "net_of_cost" if cost_model is not None else "gross_no_cost_model"
     curve_rows: list[dict[str, Any]] = []
     allocation_rows: list[dict[str, Any]] = []
+    zero_costs = _empty_cost_breakdown()
 
     for position, date in enumerate(dates):
         target = weight_array[position]
         contribution = contribution_amount if date in contribution_schedule else 0.0
+        cost_breakdown = zero_costs.copy()
+        turnover = 0.0
         if position == 0:
             contribution += initial_cash
             total_contributed += contribution
             equity = float(contribution)
-            asset_values, cash_value = _rebalance_values_array(
-                equity,
-                target,
-                len(product_tickers),
+            asset_values, cash_value, cost_breakdown, turnover = _rebalance_values_array_with_costs(
+                equity=equity,
+                target=target,
+                current_asset_values=asset_values,
+                product_tickers=product_tickers,
+                prices=price_array[position],
+                cost_model=cost_model,
+                product_assets=product_assets or {},
+                cost_multiplier=cost_multiplier,
             )
+            cumulative_trade_cost += cost_breakdown["trade_cost"]
             current_target = target.copy()
             allocation_rows.append(
                 _allocation_row_from_array(
@@ -313,6 +333,8 @@ def simulate_weighted_strategy(
                     weights.columns,
                     current_target,
                     "initial allocation",
+                    cost_breakdown=cost_breakdown,
+                    turnover=turnover,
                 )
             )
         else:
@@ -324,15 +346,23 @@ def simulate_weighted_strategy(
             target_changed = not np.allclose(target, current_target, atol=1e-10)
             should_rebalance = (
                 date in schedule
-                or contribution > 0
+                or (rebalance_on_contribution and contribution > 0)
                 or (rebalance_on_change and target_changed)
             )
             if should_rebalance:
-                asset_values, cash_value = _rebalance_values_array(
-                    equity,
-                    target,
-                    len(product_tickers),
+                asset_values, cash_value, cost_breakdown, turnover = (
+                    _rebalance_values_array_with_costs(
+                        equity=equity,
+                        target=target,
+                        current_asset_values=asset_values,
+                        product_tickers=product_tickers,
+                        prices=price_array[position],
+                        cost_model=cost_model,
+                        product_assets=product_assets or {},
+                        cost_multiplier=cost_multiplier,
+                    )
                 )
+                cumulative_trade_cost += cost_breakdown["trade_cost"]
                 current_target = target.copy()
                 if contribution > 0:
                     reason = "contribution rebalance"
@@ -341,7 +371,14 @@ def simulate_weighted_strategy(
                 else:
                     reason = "signal change"
                 allocation_rows.append(
-                    _allocation_row_from_array(date, weights.columns, target, reason)
+                    _allocation_row_from_array(
+                        date,
+                        weights.columns,
+                        target,
+                        reason,
+                        cost_breakdown=cost_breakdown,
+                        turnover=turnover,
+                    )
                 )
 
         equity = float(asset_values.sum() + cash_value)
@@ -353,9 +390,19 @@ def simulate_weighted_strategy(
                 "total_equity": equity,
                 "contribution": contribution,
                 "total_contributed": total_contributed,
+                "cost_mode": cost_mode,
+                "cost_multiplier": float(cost_multiplier),
                 "cash": cash_value,
                 "cash_weight": cash_value / equity if equity else np.nan,
                 "effective_product_leverage": effective_leverage,
+                "trade_cost": cost_breakdown["trade_cost"],
+                "commission": cost_breakdown["commission"],
+                "transaction_tax": cost_breakdown["transaction_tax"],
+                "sec_fee": cost_breakdown["sec_fee"],
+                "finra_taf": cost_breakdown["finra_taf"],
+                "slippage": cost_breakdown["slippage"],
+                "cumulative_trade_cost": cumulative_trade_cost,
+                "turnover": turnover,
                 **{
                     f"{ticker}_weight": float(asset_weights[index])
                     for index, ticker in enumerate(product_tickers)
@@ -1238,6 +1285,38 @@ def monthly_rebalance_dates(index: pd.Index) -> set[pd.Timestamp]:
     return set(pd.Timestamp(value) for value in dates.groupby(trading_index.to_period("M")).first())
 
 
+def weekly_rebalance_dates(index: pd.Index) -> set[pd.Timestamp]:
+    trading_index = pd.DatetimeIndex(index).sort_values()
+    if trading_index.empty:
+        return set()
+    dates = pd.Series(trading_index, index=trading_index)
+    # W-SUN groups Monday-Sunday weeks, so each group first is the first available
+    # trading day for that week.
+    return set(
+        pd.Timestamp(value) for value in dates.groupby(trading_index.to_period("W-SUN")).first()
+    )
+
+
+def rebalance_dates_for_cadence(index: pd.Index, cadence: str) -> set[pd.Timestamp]:
+    normalized = str(cadence or "monthly").lower().replace("-", "_")
+    trading_index = pd.DatetimeIndex(index).sort_values()
+    if normalized == "weekly":
+        return weekly_rebalance_dates(trading_index)
+    if normalized == "monthly":
+        return monthly_rebalance_dates(trading_index)
+    if normalized == "quarterly":
+        if trading_index.empty:
+            return set()
+        dates = pd.Series(trading_index, index=trading_index)
+        return set(
+            pd.Timestamp(value)
+            for value in dates.groupby(trading_index.to_period("Q")).first()
+        )
+    if normalized in {"daily", "signal_only"}:
+        return set(trading_index)
+    raise ValueError(f"Unsupported rebalance cadence: {cadence!r}.")
+
+
 def xirr(cash_flows: list[tuple[pd.Timestamp, float]]) -> float:
     if not cash_flows:
         return np.nan
@@ -1345,6 +1424,133 @@ def _rebalance_values_array(
     return asset_values, cash_value
 
 
+def _rebalance_values_array_with_costs(
+    *,
+    equity: float,
+    target: np.ndarray,
+    current_asset_values: np.ndarray,
+    product_tickers: list[str],
+    prices: np.ndarray,
+    cost_model: CostModel | None,
+    product_assets: dict[str, AssetSpec],
+    cost_multiplier: float = 1.0,
+) -> tuple[np.ndarray, float, dict[str, float], float]:
+    product_count = len(product_tickers)
+    if cost_model is None or not product_assets:
+        asset_values, cash_value = _rebalance_values_array(equity, target, product_count)
+        turnover = _turnover_from_asset_values(
+            current_asset_values=current_asset_values,
+            target_asset_values=asset_values,
+            equity=equity,
+        )
+        return asset_values, cash_value, _empty_cost_breakdown(), turnover
+
+    gross_equity = max(float(equity), 0.0)
+    target_equity = gross_equity
+    cost_breakdown = _empty_cost_breakdown()
+    target_asset_values = np.zeros(product_count, dtype=float)
+    for _ in range(5):
+        target_asset_values = target_equity * target[:product_count]
+        cost_breakdown = _estimate_rebalance_costs(
+            current_asset_values=current_asset_values,
+            target_asset_values=target_asset_values,
+            product_tickers=product_tickers,
+            prices=prices,
+            cost_model=cost_model,
+            product_assets=product_assets,
+            cost_multiplier=cost_multiplier,
+        )
+        next_target_equity = max(gross_equity - cost_breakdown["trade_cost"], 0.0)
+        if np.isclose(next_target_equity, target_equity, rtol=0.0, atol=1e-8):
+            target_equity = next_target_equity
+            break
+        target_equity = next_target_equity
+
+    target_asset_values = target_equity * target[:product_count]
+    cost_breakdown = _estimate_rebalance_costs(
+        current_asset_values=current_asset_values,
+        target_asset_values=target_asset_values,
+        product_tickers=product_tickers,
+        prices=prices,
+        cost_model=cost_model,
+        product_assets=product_assets,
+        cost_multiplier=cost_multiplier,
+    )
+    net_equity = max(gross_equity - cost_breakdown["trade_cost"], 0.0)
+    asset_values = net_equity * target[:product_count]
+    cash_value = net_equity * float(target[product_count])
+    turnover = _turnover_from_asset_values(
+        current_asset_values=current_asset_values,
+        target_asset_values=asset_values,
+        equity=gross_equity,
+    )
+    return asset_values, cash_value, cost_breakdown, turnover
+
+
+def _estimate_rebalance_costs(
+    *,
+    current_asset_values: np.ndarray,
+    target_asset_values: np.ndarray,
+    product_tickers: list[str],
+    prices: np.ndarray,
+    cost_model: CostModel,
+    product_assets: dict[str, AssetSpec],
+    cost_multiplier: float = 1.0,
+) -> dict[str, float]:
+    totals = _empty_cost_breakdown()
+    for index, ticker in enumerate(product_tickers):
+        asset = product_assets.get(ticker)
+        price = float(prices[index])
+        notional = float(target_asset_values[index] - current_asset_values[index])
+        if asset is None or np.isclose(notional, 0.0, atol=1e-10) or price <= 0.0:
+            continue
+        cost = cost_model.estimate_trade(
+            asset,
+            side=TradeSide.BUY if notional > 0.0 else TradeSide.SELL,
+            quantity=abs(notional) / price,
+            price=price,
+        )
+        totals["commission"] += float(cost.commission)
+        totals["transaction_tax"] += float(cost.transaction_tax)
+        totals["sec_fee"] += float(cost.sec_fee)
+        totals["finra_taf"] += float(cost.finra_taf)
+        totals["slippage"] += float(cost.slippage)
+    multiplier = float(cost_multiplier)
+    if multiplier != 1.0:
+        for key in ["commission", "transaction_tax", "sec_fee", "finra_taf", "slippage"]:
+            totals[key] *= multiplier
+    totals["trade_cost"] = (
+        totals["commission"]
+        + totals["transaction_tax"]
+        + totals["sec_fee"]
+        + totals["finra_taf"]
+        + totals["slippage"]
+    )
+    return totals
+
+
+def _turnover_from_asset_values(
+    *,
+    current_asset_values: np.ndarray,
+    target_asset_values: np.ndarray,
+    equity: float,
+) -> float:
+    if equity <= 0.0:
+        return 0.0
+    return float(np.abs(target_asset_values - current_asset_values).sum() / float(equity))
+
+
+def _empty_cost_breakdown() -> dict[str, float]:
+    return {
+        "trade_cost": 0.0,
+        "commission": 0.0,
+        "transaction_tax": 0.0,
+        "sec_fee": 0.0,
+        "finra_taf": 0.0,
+        "slippage": 0.0,
+    }
+
+
 def _allocation_row(date: Any, target: pd.Series, reason: str) -> dict[str, Any]:
     return {
         "date": pd.Timestamp(date),
@@ -1361,7 +1567,10 @@ def _allocation_row_from_array(
     columns: pd.Index,
     target: np.ndarray,
     reason: str,
+    cost_breakdown: dict[str, float] | None = None,
+    turnover: float = 0.0,
 ) -> dict[str, Any]:
+    costs = cost_breakdown or _empty_cost_breakdown()
     return {
         "date": pd.Timestamp(date),
         "reason": reason,
@@ -1373,6 +1582,13 @@ def _allocation_row_from_array(
             },
             ensure_ascii=False,
         ),
+        "trade_cost": costs["trade_cost"],
+        "commission": costs["commission"],
+        "transaction_tax": costs["transaction_tax"],
+        "sec_fee": costs["sec_fee"],
+        "finra_taf": costs["finra_taf"],
+        "slippage": costs["slippage"],
+        "turnover": turnover,
     }
 
 
@@ -3147,6 +3363,7 @@ __all__ = [
     "lab_config_for_scan_mode",
     "monthly_rebalance_dates",
     "rank_metrics",
+    "rebalance_dates_for_cadence",
     "render_leveraged_etf_lab_html",
     "resolve_cash_flow_modes",
     "resolve_scan_mode",
@@ -3154,6 +3371,7 @@ __all__ = [
     "static_weight_grid",
     "synthetic_daily_reset_prices",
     "trend_guard_weights",
+    "weekly_rebalance_dates",
     "write_leveraged_etf_lab_report",
     "xirr",
 ]

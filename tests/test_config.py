@@ -49,3 +49,21 @@ def test_load_mvp_config():
     assert config.monthly_decision_replay.monte_carlo_block_lengths_days == (63, 252, 504)
     assert config.monthly_decision_replay.monte_carlo_fast_samples_per_scale == 100
     assert config.monthly_decision_replay.monte_carlo_full_samples_per_scale == 500
+    assert config.strategy_search.family == "tw50"
+    assert config.strategy_search.engine == "optuna"
+    assert config.strategy_search.drawdown_limit_multiplier == 1.20
+    assert config.strategy_search.sentiment_path == "data/external/fear_greed.csv"
+    assert config.strategy_search.external_signal_feature_set == "all"
+    assert config.strategy_search.external_signals_path.endswith("market_regime_features_tw50.csv")
+
+
+def test_load_tw50_config_uses_core_external_signals():
+    config = load_backtest_config("configs/tw50_example.yaml")
+
+    assert config.strategy_search.family == "tw50"
+    assert config.strategy_search.include_external_signals is True
+    assert config.strategy_search.include_sentiment is False
+    assert config.strategy_search.external_signal_feature_set == "core"
+    assert config.monthly_decision_replay.benchmark == "fixed_1p5x_dca"
+    assert config.strategy_search.benchmark == "fixed_1p5x_dca"
+    assert config.strategy_search.execution_cadence == "monthly_core_weekly_delta"

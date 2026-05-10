@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from investment_backtest_lab.costs import CostModel, TaiwanCostConfig
 from investment_backtest_lab.leveraged_etf_lab import (
     CASH,
     CASH_FLOW_DCA,
@@ -18,16 +19,24 @@ from investment_backtest_lab.leveraged_etf_lab import (
     lab_config_for_scan_mode,
     monthly_rebalance_dates,
     rank_metrics,
+    rebalance_dates_for_cadence,
     resolve_cash_flow_modes,
     resolve_scan_mode,
     simulate_weighted_strategy,
     static_weight_grid,
     synthetic_daily_reset_prices,
     trend_guard_weights,
+    weekly_rebalance_dates,
     write_leveraged_etf_lab_report,
     xirr,
 )
-from investment_backtest_lab.models import LeveragedETFLabConfig
+from investment_backtest_lab.models import (
+    AssetSpec,
+    AssetType,
+    DataSource,
+    LeveragedETFLabConfig,
+    Market,
+)
 
 
 def test_synthetic_daily_reset_prices_apply_daily_leverage():
@@ -181,7 +190,185 @@ def test_dca_contributions_follow_monthly_first_trading_day():
     assert list(contribution_rows["date"]) == sorted(monthly_rebalance_dates(dates))
     assert curve.iloc[-1]["total_contributed"] == pytest.approx(13_000.0)
     assert curve.iloc[-1]["total_equity"] == pytest.approx(13_000.0)
+    assert curve.iloc[-1]["cumulative_trade_cost"] == pytest.approx(0.0)
     assert set(allocations["reason"]) == {"initial allocation", "contribution rebalance"}
+
+
+def test_weekly_rebalance_dates_use_first_trading_day_of_week():
+    dates = pd.to_datetime(
+        [
+            "2024-01-02",
+            "2024-01-03",
+            "2024-01-08",
+            "2024-01-09",
+            "2024-01-16",
+        ]
+    )
+
+    assert sorted(weekly_rebalance_dates(dates)) == [
+        pd.Timestamp("2024-01-02"),
+        pd.Timestamp("2024-01-08"),
+        pd.Timestamp("2024-01-16"),
+    ]
+    assert weekly_rebalance_dates(dates) == rebalance_dates_for_cadence(dates, "weekly")
+
+
+def test_weekly_execution_can_hold_monthly_contribution_until_weekly_trade():
+    dates = pd.to_datetime(["2024-01-02", "2024-02-01", "2024-02-05"])
+    prices = pd.DataFrame({"0050": [100.0, 100.0, 100.0]}, index=dates)
+    weights = pd.DataFrame([{"0050": 1.0, CASH: 0.0} for _ in dates], index=dates)
+
+    curve, allocations = simulate_weighted_strategy(
+        prices=prices,
+        target_weights=weights,
+        product_leverages={"0050": 1.0},
+        initial_cash=10_000.0,
+        rebalance_dates={pd.Timestamp("2024-01-02"), pd.Timestamp("2024-02-05")},
+        rebalance_on_contribution=False,
+        contribution_dates={pd.Timestamp("2024-02-01")},
+        contribution_amount=1_000.0,
+    )
+
+    assert curve.loc[curve["date"].eq(pd.Timestamp("2024-02-01")), "cash"].iloc[0] == pytest.approx(
+        1_000.0
+    )
+    assert set(allocations["date"]) == {pd.Timestamp("2024-01-02"), pd.Timestamp("2024-02-05")}
+    assert "contribution rebalance" not in set(allocations["reason"])
+
+
+def test_simulate_weighted_strategy_initial_buy_deducts_trade_cost():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    prices = pd.DataFrame({"0050": [100.0, 100.0]}, index=dates)
+    weights = pd.DataFrame([{"0050": 1.0, CASH: 0.0} for _ in dates], index=dates)
+    cost_model = CostModel(
+        tw=TaiwanCostConfig(
+            commission_rate=0.01,
+            commission_discount=1.0,
+            min_commission=0.0,
+            etf_transaction_tax_rate=0.0,
+            slippage_bps=0.0,
+        )
+    )
+
+    curve, allocations = simulate_weighted_strategy(
+        prices=prices,
+        target_weights=weights,
+        product_leverages={"0050": 1.0},
+        initial_cash=10_000.0,
+        cost_model=cost_model,
+        product_assets={"0050": tw_etf_asset("0050")},
+    )
+
+    expected_cost = 10_000.0 - 10_000.0 / 1.01
+    assert curve.iloc[0]["cost_mode"] == "net_of_cost"
+    assert curve.iloc[0]["total_equity"] == pytest.approx(10_000.0 / 1.01)
+    assert curve.iloc[0]["trade_cost"] == pytest.approx(expected_cost)
+    assert allocations.iloc[0]["commission"] == pytest.approx(expected_cost)
+
+
+def test_simulate_weighted_strategy_sell_rebalance_deducts_tw_etf_tax():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    prices = pd.DataFrame({"0050": [100.0, 100.0]}, index=dates)
+    weights = pd.DataFrame(
+        [{"0050": 1.0, CASH: 0.0}, {"0050": 0.0, CASH: 1.0}],
+        index=dates,
+    )
+    cost_model = CostModel(
+        tw=TaiwanCostConfig(
+            commission_rate=0.0,
+            commission_discount=1.0,
+            min_commission=0.0,
+            etf_transaction_tax_rate=0.001,
+            slippage_bps=0.0,
+        )
+    )
+
+    curve, allocations = simulate_weighted_strategy(
+        prices=prices,
+        target_weights=weights,
+        product_leverages={"0050": 1.0},
+        initial_cash=10_000.0,
+        rebalance_on_change=True,
+        cost_model=cost_model,
+        product_assets={"0050": tw_etf_asset("0050")},
+    )
+
+    assert curve.iloc[-1]["trade_cost"] == pytest.approx(10.0, abs=0.02)
+    assert curve.iloc[-1]["transaction_tax"] == pytest.approx(10.0, abs=0.02)
+    assert curve.iloc[-1]["total_equity"] == pytest.approx(9_990.0, abs=0.02)
+    assert "signal change" in set(allocations["reason"])
+
+
+def test_cost_multiplier_doubles_trade_cost_without_changing_cost_model():
+    dates = pd.date_range("2024-01-02", periods=2, freq="B")
+    prices = pd.DataFrame({"0050": [100.0, 100.0]}, index=dates)
+    weights = pd.DataFrame([{"0050": 1.0, CASH: 0.0} for _ in dates], index=dates)
+    cost_model = CostModel(
+        tw=TaiwanCostConfig(
+            commission_rate=0.01,
+            commission_discount=1.0,
+            min_commission=0.0,
+            etf_transaction_tax_rate=0.0,
+            slippage_bps=0.0,
+        )
+    )
+
+    normal, _normal_allocations = simulate_weighted_strategy(
+        prices=prices,
+        target_weights=weights,
+        product_leverages={"0050": 1.0},
+        initial_cash=10_000.0,
+        cost_model=cost_model,
+        product_assets={"0050": tw_etf_asset("0050")},
+    )
+    stressed, _stress_allocations = simulate_weighted_strategy(
+        prices=prices,
+        target_weights=weights,
+        product_leverages={"0050": 1.0},
+        initial_cash=10_000.0,
+        cost_model=cost_model,
+        product_assets={"0050": tw_etf_asset("0050")},
+        cost_multiplier=2.0,
+    )
+
+    assert stressed.iloc[0]["cost_multiplier"] == pytest.approx(2.0)
+    assert stressed.iloc[0]["trade_cost"] == pytest.approx(
+        normal.iloc[0]["trade_cost"] * 2.0,
+        rel=0.02,
+    )
+    assert stressed.iloc[0]["total_equity"] < normal.iloc[0]["total_equity"]
+
+
+def test_dca_costs_reduce_equity_without_changing_total_contributed():
+    dates = pd.date_range("2024-01-02", periods=45, freq="B")
+    prices = pd.DataFrame({"0050": [100.0] * len(dates)}, index=dates)
+    weights = pd.DataFrame([{"0050": 1.0, CASH: 0.0} for _ in dates], index=dates)
+    cost_model = CostModel(
+        tw=TaiwanCostConfig(
+            commission_rate=0.005,
+            commission_discount=1.0,
+            min_commission=0.0,
+            etf_transaction_tax_rate=0.0,
+            slippage_bps=0.0,
+        )
+    )
+
+    curve, allocations = simulate_weighted_strategy(
+        prices=prices,
+        target_weights=weights,
+        product_leverages={"0050": 1.0},
+        initial_cash=10_000.0,
+        contribution_dates=monthly_rebalance_dates(dates),
+        contribution_amount=1_000.0,
+        cost_model=cost_model,
+        product_assets={"0050": tw_etf_asset("0050")},
+    )
+
+    assert curve.iloc[-1]["total_contributed"] == pytest.approx(13_000.0)
+    assert curve.iloc[-1]["total_equity"] < 13_000.0
+    assert curve.iloc[-1]["cumulative_trade_cost"] == pytest.approx(
+        allocations["trade_cost"].sum()
+    )
 
 
 def test_dca_static_mix_allocates_new_cash_to_target_weights():
@@ -753,3 +940,7 @@ def sample_products() -> list[ProductSpec]:
         ProductSpec("QLD", 2.0, "QLD 2x"),
         ProductSpec("TQQQ", 3.0, "TQQQ 3x"),
     ]
+
+
+def tw_etf_asset(ticker: str) -> AssetSpec:
+    return AssetSpec(ticker, Market.TW, AssetType.ETF, "TWD", DataSource.YFINANCE)
